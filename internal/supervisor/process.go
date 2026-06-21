@@ -43,7 +43,7 @@ func StartProcess(ctx context.Context, svc config.ServiceConfig, name string) (*
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = svc.WORK_DIR
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(cmd)
 
 	if len(svc.ENV_VARS) > 0 {
 		if cmd.Env == nil {
@@ -235,7 +235,7 @@ func KillOrphanProcess(name string, supervisorPid int) bool {
 
 	// Process is running but we didn't start it - it's an orphan
 	fmt.Printf("killing orphan process %s (pid=%d)\n", name, pid)
-	syscall.Kill(-pid, syscall.SIGKILL) // kill process group
+	killProcessGroup(pid)
 	RemoveServicePidFile(name)
 	return true
 }

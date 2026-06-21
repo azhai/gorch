@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"syscall"
 	"time"
 )
+
+// lockFile holds the open file descriptor for the flock-based mutex.
+var lockFile *os.File
 
 type PidFile struct {
 	SupervisorPid int            `json:"supervisorPid"`
@@ -46,46 +48,4 @@ func ReadPidFile(path string) (*PidFile, error) {
 	}
 
 	return &pidFile, nil
-}
-
-func AcquireLock(path string) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to open lock file: %w", err)
-	}
-
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return fmt.Errorf("another instance is running")
-	}
-
-	return nil
-}
-
-func ReleaseLock(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0600)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	os.Remove(path)
-	return nil
-}
-
-func Daemonize() (int, error) {
-	childPid, err := syscall.ForkExec(
-		os.Args[0], os.Args[1:],
-		&syscall.ProcAttr{
-			Env:   os.Environ(),
-			Files: []uintptr{0, 1, 2},
-			Sys:   &syscall.SysProcAttr{Setsid: true},
-		},
-	)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fork: %w", err)
-	}
-
-	return childPid, nil
 }
