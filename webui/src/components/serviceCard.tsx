@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { ServiceStatus, startService, stopService, restartService } from '../api/client'
 
 interface ServiceCardProps {
@@ -15,7 +16,10 @@ const statusColors: Record<string, string> = {
 }
 
 export function ServiceCard({ service, onAction, showToast }: ServiceCardProps) {
+  const [actionLoading, setActionLoading] = useState(false)
+
   const handleAction = async (action: 'start' | 'stop' | 'restart') => {
+    setActionLoading(true)
     try {
       switch (action) {
         case 'start':
@@ -32,6 +36,8 @@ export function ServiceCard({ service, onAction, showToast }: ServiceCardProps) 
       onAction()
     } catch (err) {
       showToast(`Failed to ${action} ${service.name}: ${err}`, 'error')
+    } finally {
+      setActionLoading(false)
     }
   }
 
@@ -71,7 +77,8 @@ export function ServiceCard({ service, onAction, showToast }: ServiceCardProps) 
         {service.status !== 'running' && (
           <button
             onClick={() => handleAction('start')}
-            className="px-3 py-1 text-xs bg-emerald-100 text-emerald-700 rounded-lg hover:bg-emerald-200 transition-colors"
+            disabled={actionLoading}
+            className="px-3 py-1 text-xs bg-emerald-100 text-emerald-700 rounded-lg hover:bg-emerald-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Start
           </button>
@@ -79,15 +86,19 @@ export function ServiceCard({ service, onAction, showToast }: ServiceCardProps) 
         {service.status === 'running' && (
           <button
             onClick={() => handleAction('stop')}
-            className="px-3 py-1 text-xs bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
+            disabled={actionLoading}
+            className="px-3 py-1 text-xs bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
           >
+            {actionLoading && <span className="inline-block w-3 h-3 border border-red-400/30 border-t-red-600 rounded-full animate-spin" />}
             Stop
           </button>
         )}
         <button
           onClick={() => handleAction('restart')}
-          className="px-3 py-1 text-xs bg-macaron-sky text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+          disabled={actionLoading}
+          className="px-3 py-1 text-xs bg-macaron-sky text-blue-700 rounded-lg hover:bg-blue-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
         >
+          {actionLoading && <span className="inline-block w-3 h-3 border border-blue-300 border-t-blue-600 rounded-full animate-spin" />}
           Restart
         </button>
       </div>

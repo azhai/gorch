@@ -3,9 +3,11 @@ package web
 import (
 	"encoding/json"
 	"strconv"
+	"time"
 
 	"github.com/azhai/gorch/internal/config"
 	"github.com/gofiber/fiber/v3"
+	"github.com/robfig/cron/v3"
 )
 
 type APIResponse struct {
@@ -31,15 +33,21 @@ func (s *Server) setupRoutes() {
 	})
 
 	api.Get("/services", s.handleGetServices)
+	api.Post("/services", s.handleCreateService)
 	api.Get("/services/:name", s.handleGetService)
 	api.Post("/services/:name/start", s.handleStartService)
 	api.Post("/services/:name/stop", s.handleStopService)
 	api.Post("/services/:name/restart", s.handleRestartService)
 	api.Get("/services/:name/logs", s.handleGetLogs)
+	api.Post("/services/:name/logs/clear", s.handleClearLogs)
 	api.Get("/services/:name/config", s.handleGetConfig)
 	api.Put("/services/:name/config", s.handleUpdateConfig)
+	api.Post("/save-config", s.handleSaveConfigToFile)
+	api.Delete("/services/:name", s.handleDeleteService)
 	api.Get("/cron/:name/history", s.handleGetCronHistory)
-	api.Get("/ws", s.handleWebSocket)
+	api.Post("/cron/validate", s.handleValidateCron)
+
+	api.Get("/events", s.handleSSE)
 
 	s.app.Get("/assets/*", staticAssetHandler)
 	s.app.Get("/*", spaFallbackHandler)
@@ -92,15 +100,30 @@ func (s *Server) handleGetLogs(c fiber.Ctx) error {
 		}
 	}
 
+	logType := c.Query("type", "stdout")
+
 	cfg := s.supervisor.GetConfig()
 	svc, exists := cfg.Services[name]
 	if !exists {
 		return c.Status(404).JSON(errResponse("service not found: " + name))
 	}
 
-	logPath := svc.STDOUT
-	if logPath == "" {
+	var logPath string
+	switch logType {
+	case "stderr":
 		logPath = svc.STDERR
+	default:
+		logPath = svc.STDOUT
+	}
+	if logPath == "" {
+		if logType == "stderr" {
+			logPath = svc.STDERR
+		} else {
+			logPath = svc.STDOUT
+		}
+		if logPath == "" {
+			logPath = svc.STDERR
+		}
 	}
 
 	logMgr := s.supervisor.GetLogManager()
@@ -122,6 +145,42 @@ func (s *Server) handleGetLogs(c fiber.Ctx) error {
 		"lines":   logLines,
 		"logPath": logPath,
 	}))
+}
+
+func (s *Server) handleClearLogs(c fiber.Ctx) error {
+	name := c.Params("name")
+	logType := c.Query("type", "stdout")
+
+	cfg := s.supervisor.GetConfig()
+	svc, exists := cfg.Services[name]
+	if !exists {
+		return c.Status(404).JSON(errResponse("service not found: " + name))
+	}
+
+	var logPath string
+	switch logType {
+	case "stderr":
+		logPath = svc.STDERR
+	default:
+		logPath = svc.STDOUT
+	}
+	if logPath == "" {
+		if logType == "stderr" {
+			logPath = svc.STDERR
+		} else {
+			logPath = svc.STDOUT
+		}
+		if logPath == "" {
+			logPath = svc.STDERR
+		}
+	}
+
+	logMgr := s.supervisor.GetLogManager()
+	if err := logMgr.ClearFile(logPath); err != nil {
+		return c.JSON(errResponse("clear failed: " + err.Error()))
+	}
+
+	return c.JSON(okResponse(map[string]string{"message": "logs cleared"}))
 }
 
 func (s *Server) handleGetConfig(c fiber.Ctx) error {
@@ -153,12 +212,7 @@ func (s *Server) handleUpdateConfig(c fiber.Ctx) error {
 		return c.Status(400).JSON(errResponse("EXEC_CMD is required"))
 	}
 
-	validPolicies := map[string]bool{
-		string(config.RestartAlways):    true,
-		string(config.RestartOnFailure): true,
-		string(config.RestartNever):     true,
-	}
-	if !validPolicies[svc.RESTART_POLICY] {
+	if !config.IsValidRestartPolicy(svc.RESTART_POLICY) {
 		return c.Status(400).JSON(errResponse("invalid RESTART_POLICY: " + svc.RESTART_POLICY))
 	}
 
@@ -179,9 +233,94 @@ func (s *Server) handleUpdateConfig(c fiber.Ctx) error {
 	return c.JSON(okResponse(map[string]string{"message": "config updated"}))
 }
 
+func (s *Server) handleSaveConfigToFile(c fiber.Ctx) error {
+	if err := s.supervisor.SaveConfig(); err != nil {
+		return c.JSON(errResponse("save failed: " + err.Error()))
+	}
+	return c.JSON(okResponse(map[string]string{"message": "config saved to file"}))
+}
+
 func (s *Server) handleGetCronHistory(c fiber.Ctx) error {
 	name := c.Params("name")
 	sched := s.supervisor.GetCronScheduler()
 	history := sched.GetHistory(name)
 	return c.JSON(okResponse(history))
+}
+
+type createServiceRequest struct {
+	Name string               `json:"name"`
+	Svc  config.ServiceConfig `json:"svc"`
+}
+
+func (s *Server) handleCreateService(c fiber.Ctx) error {
+	var req createServiceRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return c.Status(400).JSON(errResponse("invalid request body: " + err.Error()))
+	}
+
+	if req.Name == "" {
+		return c.Status(400).JSON(errResponse("service name is required"))
+	}
+	if req.Svc.EXEC_CMD == "" {
+		return c.Status(400).JSON(errResponse("EXEC_CMD is required"))
+	}
+
+	if err := s.supervisor.CreateService(req.Name, req.Svc); err != nil {
+		return c.JSON(errResponse(err.Error()))
+	}
+
+	if err := s.supervisor.SaveConfig(); err != nil {
+		return c.JSON(errResponse("service created but save failed: " + err.Error()))
+	}
+
+	return c.JSON(okResponse(map[string]string{"message": "service " + req.Name + " created"}))
+}
+
+func (s *Server) handleDeleteService(c fiber.Ctx) error {
+	name := c.Params("name")
+
+	if err := s.supervisor.DeleteService(name); err != nil {
+		return c.JSON(errResponse(err.Error()))
+	}
+
+	if err := s.supervisor.SaveConfig(); err != nil {
+		return c.JSON(errResponse("service deleted but save failed: " + err.Error()))
+	}
+
+	return c.JSON(okResponse(map[string]string{"message": "service " + name + " deleted"}))
+}
+
+type validateCronRequest struct {
+	Expression string `json:"expression"`
+}
+
+func (s *Server) handleValidateCron(c fiber.Ctx) error {
+	var req validateCronRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return c.Status(400).JSON(errResponse("invalid request body: " + err.Error()))
+	}
+
+	if req.Expression == "" {
+		return c.JSON(errResponse("expression is required"))
+	}
+
+	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+	sched, err := parser.Parse(req.Expression)
+	if err != nil {
+		return c.JSON(okResponse(map[string]any{
+			"valid":   false,
+			"message": err.Error(),
+		}))
+	}
+
+	now := time.Now()
+	next := sched.Next(now)
+	next2 := sched.Next(next)
+
+	return c.JSON(okResponse(map[string]any{
+		"valid":    true,
+		"message":  "valid cron expression",
+		"nextRun":  next.Format(time.RFC3339),
+		"nextRun2": next2.Format(time.RFC3339),
+	}))
 }

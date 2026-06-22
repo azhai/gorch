@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { fetchServices, fetchServiceConfig, updateServiceConfig, ServiceStatus, ServiceConfig } from '../api/client'
+import { fetchServices, fetchServiceConfig, updateServiceConfig, saveConfigToFile, createService, deleteService, validateCronExpression, ServiceStatus, ServiceConfig } from '../api/client'
 
 export default function Config() {
   const [services, setServices] = useState<ServiceStatus[]>([])
@@ -9,6 +9,14 @@ export default function Config() {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
+  // New service state
+  const [showNewDialog, setShowNewDialog] = useState(false)
+  const [newName, setNewName] = useState('')
+
+  // Cron validation state
+  const [cronValidating, setCronValidating] = useState(false)
+  const [cronResult, setCronResult] = useState<{ valid: boolean; message: string; nextRun?: string; nextRun2?: string } | null>(null)
+
   useEffect(() => {
     fetchServices().then(setServices)
   }, [])
@@ -17,6 +25,7 @@ export default function Config() {
     if (!selected) {
       setConfig(null)
       setOriginalConfig(null)
+      setCronResult(null)
       return
     }
     fetchServiceConfig(selected).then((cfg) => {
@@ -24,6 +33,7 @@ export default function Config() {
       cfg.ENV_VARS = cfg.ENV_VARS || {}
       setConfig(cfg)
       setOriginalConfig(JSON.parse(JSON.stringify(cfg)))
+      setCronResult(null)
     })
   }, [selected])
 
@@ -37,7 +47,7 @@ export default function Config() {
       const res = await updateServiceConfig(selected, config)
       if (res.success) {
         setOriginalConfig(JSON.parse(JSON.stringify(config)))
-        setMessage('Config updated')
+        setMessage('Config applied')
       } else {
         setMessage(res.message || 'Update failed')
       }
@@ -48,9 +58,97 @@ export default function Config() {
     }
   }
 
+  const handleSaveToFile = async () => {
+    setSaving(true)
+    setMessage(null)
+    try {
+      const res = await saveConfigToFile()
+      if (res.success) {
+        setMessage('Config saved to file')
+      } else {
+        setMessage(res.message || 'Save to file failed')
+      }
+    } catch {
+      setMessage('Network error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCreate = async () => {
+    if (!newName.trim()) return
+    setSaving(true)
+    setMessage(null)
+    try {
+      const defaultConfig: ServiceConfig = {
+        WORK_DIR: '.',
+        EXEC_CMD: '',
+        RESTART_POLICY: 'never',
+        BACK_OFF: 0,
+        STDOUT: '',
+        STDERR: '',
+        DEPENDS_ON: [],
+        CRON: '',
+        ENV_VARS: {},
+      }
+      const res = await createService(newName.trim(), defaultConfig)
+      if (res.success) {
+        setShowNewDialog(false)
+        setNewName('')
+        setSelected(newName.trim())
+        fetchServices().then(setServices)
+        setMessage('Service created')
+      } else {
+        setMessage(res.message || 'Create failed')
+      }
+    } catch {
+      setMessage('Network error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!selected) return
+    if (!confirm(`Delete service "${selected}"? This cannot be undone.`)) return
+    setSaving(true)
+    setMessage(null)
+    try {
+      const res = await deleteService(selected)
+      if (res.success) {
+        setSelected('')
+        setConfig(null)
+        setOriginalConfig(null)
+        fetchServices().then(setServices)
+        setMessage('Service deleted')
+      } else {
+        setMessage(res.message || 'Delete failed')
+      }
+    } catch {
+      setMessage('Network error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleValidateCron = async () => {
+    if (!config?.CRON) return
+    setCronValidating(true)
+    setCronResult(null)
+    try {
+      const res = await validateCronExpression(config.CRON)
+      setCronResult(res)
+    } catch {
+      setCronResult({ valid: false, message: 'Network error' })
+    } finally {
+      setCronValidating(false)
+    }
+  }
+
   const updateField = <K extends keyof ServiceConfig>(key: K, value: ServiceConfig[K]) => {
     if (!config) return
     setConfig({ ...config, [key]: value })
+    if (key === 'CRON') setCronResult(null)
   }
 
   const updateEnvVar = (key: string, value: string) => {
@@ -84,12 +182,55 @@ export default function Config() {
             <option key={s.name} value={s.name}>{s.name}</option>
           ))}
         </select>
+        <button
+          onClick={() => setShowNewDialog(true)}
+          className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+        >
+          + New
+        </button>
+        {selected && (
+          <button
+            onClick={handleDelete}
+            className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
+          >
+            Delete
+          </button>
+        )}
       </div>
+
+      {showNewDialog && (
+        <div className="bg-white rounded-xl border border-macaron-peach/60 p-4 mb-4">
+          <h3 className="text-sm font-medium text-gray-700 mb-2">New Service</h3>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Service name"
+              className="flex-1 px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+            />
+            <button
+              onClick={handleCreate}
+              disabled={!newName.trim()}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40"
+            >
+              Create
+            </button>
+            <button
+              onClick={() => { setShowNewDialog(false); setNewName('') }}
+              className="px-4 py-1.5 text-sm text-gray-500 hover:text-gray-700"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {config ? (
         <div className="bg-white rounded-xl border border-macaron-peach/60 p-4 space-y-3">
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">EXEC_CMD</label>
+            <label className="block text-xs font-medium text-gray-500 mb-1">EXEC_CMD <span className="text-gray-400">(Command)</span></label>
             <input
               type="text"
               value={config.EXEC_CMD}
@@ -99,7 +240,7 @@ export default function Config() {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">WORK_DIR</label>
+            <label className="block text-xs font-medium text-gray-500 mb-1">WORK_DIR <span className="text-gray-400">(Working Directory)</span></label>
             <input
               type="text"
               value={config.WORK_DIR}
@@ -110,7 +251,7 @@ export default function Config() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">RESTART_POLICY</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">RESTART_POLICY <span className="text-gray-400">(Restart)</span></label>
               <select
                 value={config.RESTART_POLICY}
                 onChange={(e) => updateField('RESTART_POLICY', e.target.value)}
@@ -122,7 +263,7 @@ export default function Config() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">BACK_OFF</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">BACK_OFF <span className="text-gray-400">(Seconds)</span></label>
               <input
                 type="number"
                 value={config.BACK_OFF}
@@ -134,7 +275,7 @@ export default function Config() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">STDOUT</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">STDOUT <span className="text-gray-400">(Log Output)</span></label>
               <input
                 type="text"
                 value={config.STDOUT}
@@ -143,7 +284,7 @@ export default function Config() {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">STDERR</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">STDERR <span className="text-gray-400">(Error Output)</span></label>
               <input
                 type="text"
                 value={config.STDERR}
@@ -154,18 +295,35 @@ export default function Config() {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">CRON</label>
-            <input
-              type="text"
-              value={config.CRON}
-              onChange={(e) => updateField('CRON', e.target.value)}
-              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
-              placeholder="e.g. 0 */30 * * * *"
-            />
+            <label className="block text-xs font-medium text-gray-500 mb-1">CRON <span className="text-gray-400">(Schedule, 6-field with seconds)</span></label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={config.CRON || ''}
+                onChange={(e) => updateField('CRON', e.target.value)}
+                className="flex-1 px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                placeholder="e.g. 0 */30 * * * *"
+              />
+              <button
+                onClick={handleValidateCron}
+                disabled={!config.CRON || cronValidating}
+                className="px-3 py-1.5 text-xs bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors disabled:opacity-40 whitespace-nowrap"
+              >
+                {cronValidating ? 'Checking...' : 'Validate'}
+              </button>
+            </div>
+            {cronResult && (
+              <div className={`mt-1 text-xs rounded px-2 py-1 ${cronResult.valid ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                {cronResult.valid
+                  ? <>Valid. Next runs: {cronResult.nextRun}, {cronResult.nextRun2}</>
+                  : <>Invalid: {cronResult.message}</>
+                }
+              </div>
+            )}
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">DEPENDS_ON</label>
+            <label className="block text-xs font-medium text-gray-500 mb-1">DEPENDS_ON <span className="text-gray-400">(Dependencies)</span></label>
             <input
               type="text"
               value={config.DEPENDS_ON.join(', ')}
@@ -177,7 +335,7 @@ export default function Config() {
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs font-medium text-gray-500">ENV_VARS</label>
+              <label className="block text-xs font-medium text-gray-500">ENV_VARS <span className="text-gray-400">(Environment)</span></label>
               <button onClick={addEnvVar} className="text-xs text-blue-700 hover:text-blue-900">+ Add</button>
             </div>
             <div className="space-y-1">
@@ -212,7 +370,13 @@ export default function Config() {
           </div>
 
           {message && (
-            <div className={`text-sm rounded-lg px-3 py-2 ${message === 'Config updated' ? 'bg-emerald-100 text-emerald-700' : 'bg-macaron-rose/30 text-red-700'}`}>
+            <div className={`text-sm rounded-lg px-3 py-2 ${
+              message.includes('applied')
+                ? 'bg-blue-100 text-blue-700'
+                : message.includes('saved') || message.includes('created') || message.includes('deleted')
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-macaron-rose/30 text-red-700'
+            }`}>
               {message}
             </div>
           )}
@@ -221,11 +385,17 @@ export default function Config() {
             <button
               onClick={handleSave}
               disabled={!hasChanges || saving}
-              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? 'Applying...' : 'Apply'}
             </button>
-            <span className="text-xs text-gray-400">Runtime config, lost on restart</span>
+            <button
+              onClick={handleSaveToFile}
+              disabled={saving}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40"
+            >
+              {saving ? 'Saving...' : 'Save to File'}
+            </button>
           </div>
         </div>
       ) : (

@@ -157,11 +157,6 @@ func (p *ProcessInfo) CloseFiles() {
 	}
 }
 
-func EnsureDir(filePath string) error {
-	dir := filepath.Dir(filePath)
-	return os.MkdirAll(dir, 0755)
-}
-
 // servicePidPath returns the path for a service's PID file.
 func servicePidPath(name string) string {
 	return filepath.Join(ServicePidDir, name+".pid")

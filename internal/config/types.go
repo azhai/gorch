@@ -3,6 +3,7 @@ package config
 type Config struct {
 	Services  map[string]ServiceConfig `toml:"services"`
 	Web       WebConfig                `toml:"web"`
+	LOG_DIR   string                   `toml:"LOG_DIR"`
 	topoOrder []string
 }
 

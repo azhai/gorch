@@ -21,6 +21,9 @@ type SupervisorProvider interface {
 	StopService(ctx context.Context, name string) error
 	RestartService(ctx context.Context, name string) error
 	UpdateServiceConfig(name string, svc config.ServiceConfig) error
+	CreateService(name string, svc config.ServiceConfig) error
+	DeleteService(name string) error
+	SaveConfig() error
 }
 
 type Server struct {

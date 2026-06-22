@@ -65,8 +65,42 @@ func New() *Config {
 	}
 }
 
+// cleanServiceConfig returns a copy with empty/zero fields removed so they won't appear in the saved TOML.
+func cleanServiceConfig(svc ServiceConfig) map[string]any {
+	clean := make(map[string]any)
+	if svc.EXEC_CMD != "" {
+		clean["EXEC_CMD"] = svc.EXEC_CMD
+	}
+	if svc.WORK_DIR != "" && svc.WORK_DIR != "." {
+		clean["WORK_DIR"] = svc.WORK_DIR
+	}
+	if svc.RESTART_POLICY != "" && svc.RESTART_POLICY != string(RestartNever) {
+		clean["RESTART_POLICY"] = svc.RESTART_POLICY
+	}
+	if svc.BACK_OFF > 0 {
+		clean["BACK_OFF"] = svc.BACK_OFF
+	}
+	if svc.STDOUT != "" {
+		clean["STDOUT"] = svc.STDOUT
+	}
+	if svc.STDERR != "" {
+		clean["STDERR"] = svc.STDERR
+	}
+	if len(svc.DEPENDS_ON) > 0 {
+		clean["DEPENDS_ON"] = svc.DEPENDS_ON
+	}
+	if svc.CRON != "" {
+		clean["CRON"] = svc.CRON
+	}
+	if len(svc.ENV_VARS) > 0 {
+		clean["ENV_VARS"] = svc.ENV_VARS
+	}
+	return clean
+}
+
 // Save writes the config to a TOML file at the given path.
 // The directory will be created if it does not exist.
+// Empty fields are omitted from the output to keep the file clean.
 func (c *Config) Save(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -77,7 +111,43 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("failed to create config dir: %w", err)
 	}
 
-	data, err := toml.Marshal(c)
+	// Build a clean map — omit empty service fields
+	services := make(map[string]any, len(c.Services))
+	for name, svc := range c.Services {
+		clean := cleanServiceConfig(svc)
+		if len(clean) > 0 {
+			services[name] = clean
+		}
+	}
+
+	out := make(map[string]any)
+	if len(services) > 0 {
+		out["services"] = services
+	}
+	web := make(map[string]any)
+	if c.Web.WEB_ENABLE {
+		web["WEB_ENABLE"] = true
+	}
+	if c.Web.WEB_ADDR != "" && c.Web.WEB_ADDR != "127.0.0.1:8080" {
+		web["WEB_ADDR"] = c.Web.WEB_ADDR
+	}
+	if c.Web.WEB_AUTH {
+		web["WEB_AUTH"] = true
+	}
+	if c.Web.WEB_USER != "" {
+		web["WEB_USER"] = c.Web.WEB_USER
+	}
+	if c.Web.WEB_PASS != "" {
+		web["WEB_PASS"] = c.Web.WEB_PASS
+	}
+	if len(web) > 0 {
+		out["web"] = web
+	}
+	if c.LOG_DIR != "" {
+		out["LOG_DIR"] = c.LOG_DIR
+	}
+
+	data, err := toml.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("failed to serialize config: %w", err)
 	}
@@ -101,12 +171,22 @@ func validateAndFillDefaults(cfg *Config, configDir string) error {
 
 		if svc.RESTART_POLICY == "" {
 			svc.RESTART_POLICY = string(RestartNever)
-		} else if !isValidRestartPolicy(svc.RESTART_POLICY) {
+		} else if !IsValidRestartPolicy(svc.RESTART_POLICY) {
 			return fmt.Errorf("service '%s' invalid RESTART_POLICY: %s", name, svc.RESTART_POLICY)
 		}
 
 		if svc.BACK_OFF < 0 {
 			return fmt.Errorf("service '%s' BACK_OFF must be non-negative", name)
+		}
+
+		// Fill default log paths from LOG_DIR
+		if cfg.LOG_DIR != "" {
+			if svc.STDOUT == "" {
+				svc.STDOUT = filepath.Join(cfg.LOG_DIR, name+".out.log")
+			}
+			if svc.STDERR == "" {
+				svc.STDERR = filepath.Join(cfg.LOG_DIR, name+".err.log")
+			}
 		}
 
 		cfg.Services[name] = svc
@@ -119,7 +199,7 @@ func validateAndFillDefaults(cfg *Config, configDir string) error {
 	return nil
 }
 
-func isValidRestartPolicy(p string) bool {
+func IsValidRestartPolicy(p string) bool {
 	switch RestartPolicy(p) {
 	case RestartAlways, RestartOnFailure, RestartNever:
 		return true
@@ -130,22 +210,12 @@ func isValidRestartPolicy(p string) bool {
 func expandEnvInConfig(cfg *Config) error {
 	for name, svc := range cfg.Services {
 		var err error
-
-		svc.EXEC_CMD, err = expandEnvField(svc.EXEC_CMD, name, "EXEC_CMD")
-		if err != nil {
-			return err
-		}
-		svc.WORK_DIR, err = expandEnvField(svc.WORK_DIR, name, "WORK_DIR")
-		if err != nil {
-			return err
-		}
-		svc.STDOUT, err = expandEnvField(svc.STDOUT, name, "STDOUT")
-		if err != nil {
-			return err
-		}
-		svc.STDERR, err = expandEnvField(svc.STDERR, name, "STDERR")
-		if err != nil {
-			return err
+		fields := []*string{&svc.EXEC_CMD, &svc.WORK_DIR, &svc.STDOUT, &svc.STDERR}
+		names := []string{"EXEC_CMD", "WORK_DIR", "STDOUT", "STDERR"}
+		for i, p := range fields {
+			if *p, err = expandEnv(*p); err != nil {
+				return fmt.Errorf("service '%s' %s: %w", name, names[i], err)
+			}
 		}
 
 		for k, v := range svc.ENV_VARS {
@@ -157,14 +227,6 @@ func expandEnvInConfig(cfg *Config) error {
 		cfg.Services[name] = svc
 	}
 	return nil
-}
-
-func expandEnvField(val, name, field string) (string, error) {
-	expanded, err := expandEnv(val)
-	if err != nil {
-		return "", fmt.Errorf("service '%s' %s: %w", name, field, err)
-	}
-	return expanded, nil
 }
 
 // expandEnv replaces ${VAR} patterns with environment variable values.

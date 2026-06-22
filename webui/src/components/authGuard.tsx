@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Navigate } from 'react-router-dom'
 import { detectAuthMode, isAuthEnabled, getToken } from '../api/authStore'
+import { authErrorEvent } from '../api/client'
 
 interface AuthGuardProps {
   children: React.ReactNode
@@ -8,11 +9,16 @@ interface AuthGuardProps {
 
 export default function AuthGuard({ children }: AuthGuardProps) {
   const [checking, setChecking] = useState(isAuthEnabled() === null)
+  const [authLost, setAuthLost] = useState(false)
 
   useEffect(() => {
     if (isAuthEnabled() === null) {
       detectAuthMode().then(() => setChecking(false))
     }
+
+    const onAuthError = () => setAuthLost(true)
+    authErrorEvent.addEventListener('auth-error', onAuthError)
+    return () => authErrorEvent.removeEventListener('auth-error', onAuthError)
   }, [])
 
   if (checking) {
@@ -27,7 +33,7 @@ export default function AuthGuard({ children }: AuthGuardProps) {
     return <>{children}</>
   }
 
-  if (!getToken()) {
+  if (!getToken() || authLost) {
     return <Navigate to="/login" replace />
   }
 

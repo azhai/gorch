@@ -31,12 +31,20 @@ func authMiddleware(cfg config.WebConfig) fiber.Handler {
 			return c.Next()
 		}
 
-		authHeader := c.Get("Authorization")
-		if authHeader == "" {
+		token := ""
+
+		// SSE uses query param for token since EventSource API doesn't support headers
+		if strings.HasPrefix(c.Path(), "/api/events") {
+			token = c.Query("token")
+		} else {
+			authHeader := c.Get("Authorization")
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+
+		if token == "" {
 			return c.Status(401).JSON(errResponse("authentication required"))
 		}
 
-		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if !validateToken(token, secret) {
 			return c.Status(401).JSON(errResponse("invalid or expired token"))
 		}

@@ -2,103 +2,91 @@
 
 A lightweight process supervisor written in Go, inspired by [Supervisor](http://supervisord.org/).
 
-## Features
+Single binary, no runtime dependencies. Declarative TOML config. Built-in Web UI.
 
-- **Declarative Configuration** — TOML-based service definitions
-- **Dependency Management** — Topological startup/shutdown ordering
-- **Restart Policies** — `always`, `on-failure`, `never` with back-off
-- **Cron Scheduling** — Scheduled tasks with overlap detection
-- **Web Management UI** — Real-time dashboard with WebSocket updates
-- **Daemon Mode** — Background execution with Unix Socket IPC
-- **Log Management** — File rotation and real-time log streaming
-- **Single Binary** — No runtime dependencies, frontend embedded
+[简体中文](./README-ZH.md)
+
+
+![Gorch Web UI](./screenshot-gorch.png)
+
+## Install
+
+### From Source
+
+```sh
+export PATH="$GOPATH/bin:$PATH"
+go install github.com/azhai/gorch@latest
+```
+
+### Install as System Service
+
+In macOS, suggest [launchd-ui](https://github.com/azu/launchd-ui) to manage the service.
+
+```sh
+gorch install            # system-wide (Linux: systemd, macOS: launchd)
+gorch install --user     # user-level service
+gorch uninstall          # remove
+```
+
+`gorch install` automatically writes the service file, loads and starts it. If the auto-start fails, load manually:
+
+```sh
+# macOS:
+launchctl load -w ~/Library/LaunchAgents/com.github.azhai.gorch.plist
+# Linux:
+systemctl daemon-reload
+systemctl enable --now gorch
+```
 
 ## Quick Start
 
-### Build
-
 ```sh
-make one          # local build (current platform)
-make build        # cross-compile (darwin/linux/windows × arm64/amd64)
-make all          # clean → one → build (full pipeline)
+# 1. Create config
+cp gorch.toml.example gorch.toml
+# Edit gorch.toml to define your services
+
+# 2. Start
+gorch start                    # foreground, default config
+gorch start -c /etc/gorch.toml # specify config path
+gorch start -d                 # daemonize (background)
+
+# 3. Check status
+gorch status
+gorch status -s api            # single service
+gorch status --json            # JSON output
+
+# 4. Control services
+gorch restart -s api
+gorch stop
+
+# 5. View logs
+gorch logs -s api              # last 100 lines
+gorch logs -s api -n 500      # last 500 lines
 ```
 
-### Makefile Targets
+## Configuration
 
-| Target | Description |
-|--------|-------------|
-| `make one` | Local single-platform build — compiles `gorch` binary + all `cmd/*` commands |
-| `make build` | Cross-compile for 5 platforms: darwin-arm64/amd64, linux-arm64/amd64, windows-amd64 |
-| `make all` | Full pipeline: clean → local build → cross-compile |
-| `make front` | Build frontend only (`webui/` via npm/Vite) |
-| `make run` | Build frontend + `go run ./` |
-| `make dev` | Hot-reload dev server (air for backend, vite HMR for frontend) |
-| `make clean` | Remove `bin/`, `tmp/`, and frontend dist |
-| `make test` | Run Go tests with verbose output |
-| `make lint` | Run golangci-lint |
-| `make tidy` | Run go mod tidy |
+Config file is TOML format. Default: `gorch.toml` in current directory.
 
-### Project Structure
-
-```
-gorch/
-├── main.go              # entry point (SINGLETON binary: gorch)
-├── cmd/
-│   └── weblite/         # additional command binaries (auto-discovered)
-│       ├── cmd.go
-│       └── server.go
-├── internal/            # core packages
-│   ├── config/          # TOML config loader
-│   ├── supervisor/      # process supervisor
-│   ├── web/             # Fiber HTTP server + WebSocket
-│   ├── cron/            # cron scheduler
-│   ├── ipc/             # Unix socket IPC
-│   └── status/          # status cache & snapshot
-├── webui/               # React + TypeScript + Tailwind frontend (embedded)
-│   └── src/
-├── gorch.toml           # configuration file
-└── Makefile             # build system
-```
-
-### How COMMANDS Auto-Discovery Works
-
-The Makefile automatically discovers subdirectories under `cmd/`:
-- Each directory in `cmd/` becomes a separate build target
-- The **main** binary (`gorch`) is built from `./` (root `main.go`)
-- **Command** binaries are built from `./cmd/<name>/`
-- Adding a new command is as simple as creating a new directory under `cmd/`
-
-### Version Injection
-
-Builds automatically inject the git version string into the binary:
-
-```sh
-VERSION=$(git describe --tags) make one
-# or let it auto-detect (defaults to "dev" if no tags)
-```
-
-### Testing
-
-```sh
-make test              # run all Go unit tests (52 tests across 5 packages)
-./test_makefile.sh     # dry-run tests for Makefile targets
-```
-
-#### Test Coverage
-
-| Package | Tests | Coverage |
-|---------|-------|----------|
-| `internal/config` | 20 | TOML parsing, validation, env expansion, topological sort, circular deps, cron config |
-| `internal/status` | 9 | Cache CRUD, state save/load JSON roundtrip |
-| `internal/cron` | 14 | Scheduler lifecycle, job registration, execution records (capped at 10), overlap detection |
-| `internal/ipc` | 6 | Protocol serialization, Ok/ErrorResponse, all action types |
-| `internal/supervisor` | 15 | Constructor/options, status queries, config update, command handling, EnsureDir |
-
-### Configuration
-
-Create a `gorch.toml`:
+### Minimal Example
 
 ```toml
+[services.myapp]
+EXEC_CMD = "python app.py"
+```
+
+### Full Example
+
+```toml
+LOG_DIR = "/var/log/gorch"
+
+[web]
+WEB_ENABLE = true
+WEB_ADDR = "127.0.0.1:8080"
+WEB_AUTH = true
+WEB_USER = "admin"
+WEB_PASS = "secret"
+
 [services.api]
 EXEC_CMD = "python manage.py runserver 0.0.0.0:8000"
 WORK_DIR = "/app/backend"
@@ -108,52 +96,100 @@ STDOUT = "/var/log/api.stdout.log"
 STDERR = "/var/log/api.stderr.log"
 DEPENDS_ON = ["postgres"]
 CRON = "0 */30 * * * *"
-ENV_VARS = { DEBUG = "true" }
+ENV_VARS = { DEBUG = "true", DATABASE_URL = "postgres://user:pass@localhost:5432/db" }
 
 [services.postgres]
 EXEC_CMD = "postgres -D /var/lib/postgres"
 RESTART_POLICY = "always"
 BACK_OFF = 3
+STDOUT = "/var/log/postgres.log"
 
-[web]
-WEB_ENABLE = true
-WEB_ADDR = "127.0.0.1:8080"
+[services.nginx]
+EXEC_CMD = "nginx -g 'daemon off;'"
+RESTART_POLICY = "always"
+DEPENDS_ON = ["api"]
 ```
 
-### Usage
-
-| Command | Description |
-|---------|-------------|
-| `gorch start` | Start services in foreground |
-| `gorch start -c app.toml` | Start with specific config |
-| `gorch start --daemonize` | Run as background daemon |
-| `gorch status` | Show service status |
-| `gorch status --json` | JSON output |
-| `gorch logs -s api` | View service logs |
-| `gorch restart -s api` | Restart a service |
-| `gorch stop` | Stop all services |
-
-### Service Configuration Fields
+### Service Fields
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `EXEC_CMD` | Yes | — | Command to execute |
-| `WORK_DIR` | No | Config file directory | Working directory |
-| `RESTART_POLICY` | No | `never` | `always`, `on-failure`, or `never` |
-| `BACK_OFF` | No | `0` | Seconds to wait before restart |
-| `STDOUT` | No | Supervisor log | Stdout log file path |
-| `STDERR` | No | Same as STDOUT | Stderr log file path |
-| `DEPENDS_ON` | No | `[]` | List of service dependencies |
-| `CRON` | No | — | Cron expression for scheduled runs |
-| `ENV_VARS` | No | `{}` | Environment variables map |
+| `WORK_DIR` | No | Config file directory | Working directory for the process |
+| `RESTART_POLICY` | No | `never` | `always` / `on-failure` / `never` |
+| `BACK_OFF` | No | `0` | Seconds to wait before restart attempt |
+| `STDOUT` | No | `LOG_DIR/<name>.out.log` | Stdout log file path |
+| `STDERR` | No | `LOG_DIR/<name>.err.log` | Stderr log file path |
+| `DEPENDS_ON` | No | `[]` | Services that must start first (topological order) |
+| `CRON` | No | — | 6-field cron expression (with seconds) for scheduled runs |
+| `ENV_VARS` | No | `{}` | Environment variables passed to the process |
 
-### Web UI
+### Web UI Fields
 
-When `WEB_ENABLE = true`, visit `http://127.0.0.1:8080` for:
-- Real-time service status dashboard
-- Service start/stop/restart controls
-- Log viewer with live streaming
-- Read-only configuration view
+| Field | Default | Description |
+|-------|---------|-------------|
+| `WEB_ENABLE` | `false` | Enable the web management interface |
+| `WEB_ADDR` | `127.0.0.1:8080` | Listen address |
+| `WEB_AUTH` | `false` | Enable login authentication |
+| `WEB_USER` | — | Login username |
+| `WEB_PASS` | — | Login password |
+
+### Global Fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `LOG_DIR` | — | Default log directory; services without explicit STDOUT/STDERR will use `<LOG_DIR>/<name>.out.log` and `<LOG_DIR>/<name>.err.log` |
+
+### Environment Variable Expansion
+
+Use `${VAR}` syntax in string fields — they will be expanded from the environment at load time:
+
+```toml
+[services.app]
+EXEC_CMD = "/app/bin/start --port ${PORT}"
+WORK_DIR = "${HOME}/projects/app"
+```
+
+### Cron Expressions
+
+6-field format with seconds:
+
+```
+┌──────── second (0-59)
+│ ┌────── minute (0-59)
+│ │ ┌──── hour (0-23)
+│ │ │ ┌── day of month (1-31)
+│ │ │ │ ┌─ month (1-12)
+│ │ │ │ │ ┌ day of week (0-6, Sun=0)
+│ │ │ │ │ │
+* * * * * *
+```
+
+Examples: `0 */30 * * * *` (every 30 min), `0 0 8 * * 1-5` (8am weekdays)
+
+Cron services cannot be started manually — they run on schedule. Overlapping runs are detected and skipped.
+
+## Web UI
+
+Visit `http://<WEB_ADDR>` when `WEB_ENABLE = true`.
+
+Features:
+- **Dashboard** — Real-time service status with WebSocket updates, start/stop/restart controls
+- **Logs** — View stdout and stderr logs with tab switching
+- **Config** — Edit service configuration with two-step save: Apply (memory) then Save to File (persist)
+- **Cron Validation** — Validate cron expressions and preview next run times
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `gorch start [-c config] [-d]` | Start services (`-d` to daemonize) |
+| `gorch stop` | Stop all services |
+| `gorch restart -s <name>` | Restart a service |
+| `gorch status [-s name] [-j]` | Show status (`-j` for JSON) |
+| `gorch logs -s <name> [-n lines]` | View service logs |
+| `gorch install [--user]` | Install as system service |
+| `gorch uninstall [--user]` | Uninstall system service |
 
 ## Architecture
 
@@ -168,12 +204,12 @@ CLI ──► Unix Socket IPC ──► Supervisor ──► Fiber Web Server
 
 ## Tech Stack
 
-- **Go 1.26** — Core runtime
+- **Go** — Core runtime
 - **Cobra** — CLI framework
 - **Fiber** — HTTP server
 - **robfig/cron** — Cron scheduling
-- **pelletier/go-toml/v2** — TOML parsing
-- **React + TypeScript + Tailwind** — Web UI (embedded)
+- **go-toml/v2** — TOML parsing
+- **React + TypeScript + Tailwind** — Web UI (embedded via embed)
 
 ## License
 

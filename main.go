@@ -82,6 +82,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	sup := supervisor.NewSupervisor(cfg,
 		supervisor.WithPidPath("/tmp/gorch.pid"),
 		supervisor.WithSocketPath(defaultSocketPath),
+		supervisor.WithConfigPath(configPath),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -111,27 +112,7 @@ func stopCmd() *cobra.Command {
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
-	action := "shutdown"
-	service := ""
-	if serviceName != "" {
-		action = "stop"
-		service = serviceName
-	}
-
-	resp, err := ipc.SendCommand(defaultSocketPath, ipc.ControlCommand{
-		Action:  action,
-		Service: &service,
-	})
-	if err != nil {
-		return err
-	}
-
-	if resp.Status != "ok" {
-		return fmt.Errorf("%s", resp.Message)
-	}
-
-	fmt.Println(resp.Message)
-	return nil
+	return ipcAction("shutdown", serviceName)
 }
 
 func restartCmd() *cobra.Command {
@@ -150,19 +131,20 @@ func runRestart(cmd *cobra.Command, args []string) error {
 	if serviceName == "" {
 		return fmt.Errorf("service name required for restart")
 	}
+	return ipcAction("restart", serviceName)
+}
 
+func ipcAction(action, service string) error {
 	resp, err := ipc.SendCommand(defaultSocketPath, ipc.ControlCommand{
-		Action:  "restart",
-		Service: &serviceName,
+		Action:  action,
+		Service: &service,
 	})
 	if err != nil {
 		return err
 	}
-
 	if resp.Status != "ok" {
 		return fmt.Errorf("%s", resp.Message)
 	}
-
 	fmt.Println(resp.Message)
 	return nil
 }
@@ -202,7 +184,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("%-20s %-12s %-8s %-12s %-8s\n", "NAME", "STATUS", "PID", "UPTIME", "RESTARTS")
 	fmt.Printf("%-20s %-12s %-8s %-12s %-8s\n", "----", "------", "---", "------", "--------")
 
-	var statuses map[string]struct {
+	type statusEntry struct {
 		Name         string `json:"name"`
 		Status       string `json:"status"`
 		Pid          int    `json:"pid"`
@@ -210,11 +192,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		RestartCount int    `json:"restartCount"`
 	}
 
-	if err := json.Unmarshal(resp.Data, &statuses); err != nil {
-		return fmt.Errorf("failed to parse status: %w", err)
-	}
-
-	for _, st := range statuses {
+	printEntry := func(st statusEntry) {
 		pid := "-"
 		if st.Pid > 0 {
 			pid = fmt.Sprintf("%d", st.Pid)
@@ -224,6 +202,23 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			uptime = fmt.Sprintf("%ds", st.Uptime)
 		}
 		fmt.Printf("%-20s %-12s %-8s %-12s %-8d\n", st.Name, st.Status, pid, uptime, st.RestartCount)
+	}
+
+	if serviceName != "" {
+		// single service: response is a single object, not a map
+		var st statusEntry
+		if err := json.Unmarshal(resp.Data, &st); err != nil {
+			return fmt.Errorf("failed to parse status: %w", err)
+		}
+		printEntry(st)
+	} else {
+		var statuses map[string]statusEntry
+		if err := json.Unmarshal(resp.Data, &statuses); err != nil {
+			return fmt.Errorf("failed to parse status: %w", err)
+		}
+		for _, st := range statuses {
+			printEntry(st)
+		}
 	}
 
 	return nil
@@ -458,7 +453,7 @@ func serviceScope(user bool) string {
 
 // ── macOS launchd ──────────────────────────────────────────
 
-const launchdLabel = "com.gorch"
+const launchdLabel = "com.github.azhai.gorch"
 
 func launchdPlistPath() string {
 	home, _ := os.UserHomeDir()

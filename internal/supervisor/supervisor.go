@@ -134,8 +134,41 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		s.hub.Run()
 	}()
 
+	// uptime ticker: broadcast every 5 seconds aligned to clock
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.uptimeTicker(ctx)
+	}()
+
 	<-ctx.Done()
 	return s.Stop(context.Background())
+}
+
+func (s *Supervisor) uptimeTicker(ctx context.Context) {
+	// align to next 5-second boundary
+	now := time.Now()
+	next := now.Truncate(5 * time.Second).Add(5 * time.Second)
+	select {
+	case <-time.After(next.Sub(now)):
+	case <-ctx.Done():
+		return
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	// send initial tick
+	s.hub.BroadcastUptimeTick(s.GetAllStatus())
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.hub.BroadcastUptimeTick(s.GetAllStatus())
+		}
+	}
 }
 
 func (s *Supervisor) Stop(ctx context.Context) error {
@@ -245,6 +278,48 @@ func (s *Supervisor) UpdateServiceConfig(name string, svc config.ServiceConfig) 
 	return nil
 }
 
+// CreateService adds a new service to the config.
+func (s *Supervisor) CreateService(name string, svc config.ServiceConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.cfg.Services[name]; exists {
+		return fmt.Errorf("service already exists: %s", name)
+	}
+
+	s.cfg.Services[name] = svc
+	return nil
+}
+
+// DeleteService removes a service from the config.
+// If the service is running, it will be stopped first.
+func (s *Supervisor) DeleteService(name string) error {
+	s.mu.Lock()
+	if _, exists := s.cfg.Services[name]; !exists {
+		s.mu.Unlock()
+		return fmt.Errorf("service not found: %s", name)
+	}
+
+	proc, running := s.processes[name]
+	s.mu.Unlock()
+
+	if running {
+		StopProcess(proc, 10*time.Second)
+	}
+
+	s.mu.Lock()
+	delete(s.processes, name)
+	delete(s.cfg.Services, name)
+	s.statusCache.Update(name, status.ServiceStatus{Name: name, Status: config.StatusStopped})
+	s.mu.Unlock()
+	return nil
+}
+
+// SaveConfig persists the current config to the TOML file.
+func (s *Supervisor) SaveConfig() error {
+	return s.cfg.Save(s.configPath)
+}
+
 func (s *Supervisor) HandleCommand(cmd ipc.ControlCommand) ipc.ControlResponse {
 	ctx := context.Background()
 
@@ -304,17 +379,18 @@ func (s *Supervisor) startService(ctx context.Context, name string, svc config.S
 			Name:   name,
 			Status: config.StatusFailed,
 		})
-		s.broadcastStatus(name, config.StatusFailed, 0, 0)
+		s.hub.BroadcastStatusChange(name, string(config.StatusFailed), 0, 0, 0)
 		return err
 	}
 
 	s.processes[name] = proc
 	s.statusCache.Update(name, status.ServiceStatus{
-		Name:   name,
-		Status: config.StatusRunning,
-		Pid:    proc.Pid,
+		Name:      name,
+		Status:    config.StatusRunning,
+		Pid:       proc.Pid,
+		StartedAt: proc.StartTime.Unix(),
 	})
-	s.broadcastStatus(name, config.StatusRunning, proc.Pid, 0)
+	s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, 0)
 
 	s.wg.Add(1)
 	go s.monitorLoop(ctx, name, svc)
@@ -339,7 +415,7 @@ func (s *Supervisor) stopService(name string) error {
 		Name:   name,
 		Status: config.StatusStopped,
 	})
-	s.broadcastStatus(name, config.StatusStopped, 0, proc.RestartCnt)
+	s.hub.BroadcastStatusChange(name, string(config.StatusStopped), 0, 0, proc.RestartCnt)
 
 	return nil
 }
@@ -361,33 +437,40 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 	exitCode := <-exitCh
 	slog.Info("service exited", "service", name, "exitCode", exitCode)
 
+	// Check manual stop without holding the lock (set by stopService before we get here)
+	if proc.ManualStop {
+		return
+	}
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Re-check: stopService may have set ManualStop while we waited for the lock
+	if proc.ManualStop {
+		s.mu.Unlock()
+		return
+	}
 
 	shouldRestart := false
-	if proc.ManualStop {
+	switch config.RestartPolicy(svc.RESTART_POLICY) {
+	case config.RestartAlways:
+		shouldRestart = true
+	case config.RestartOnFailure:
+		shouldRestart = exitCode != 0
+	case config.RestartNever:
 		shouldRestart = false
-		delete(s.processes, name)
-		return
-	} else {
-		switch config.RestartPolicy(svc.RESTART_POLICY) {
-		case config.RestartAlways:
-			shouldRestart = true
-		case config.RestartOnFailure:
-			shouldRestart = exitCode != 0
-		case config.RestartNever:
-			shouldRestart = false
-		}
 	}
 
 	if shouldRestart && proc.RestartCnt < maxRestartCount {
 		proc.RestartCnt++
+		s.mu.Unlock()
+
 		if svc.BACK_OFF > 0 {
 			slog.Info("backing off before restart", "service", name, "backOffSeconds", svc.BACK_OFF)
 			time.Sleep(time.Duration(svc.BACK_OFF) * time.Second)
 		}
 
+		s.mu.Lock()
 		delete(s.processes, name)
+		s.mu.Unlock()
 		if err := s.startService(ctx, name, svc); err != nil {
 			slog.Error("restart failed", "service", name, "error", err)
 		}
@@ -410,7 +493,8 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 		RestartCount: proc.RestartCnt,
 		ExitCode:     &exitCode,
 	})
-	s.broadcastStatus(name, finalStatus, 0, proc.RestartCnt)
+	s.hub.BroadcastStatusChange(name, string(finalStatus), 0, 0, proc.RestartCnt)
+	s.mu.Unlock()
 }
 
 func (s *Supervisor) registerCronJob(name string, svc config.ServiceConfig) error {
@@ -458,10 +542,6 @@ func (s *Supervisor) registerCronJob(name string, svc config.ServiceConfig) erro
 			Status: config.StatusStopped,
 		})
 	})
-}
-
-func (s *Supervisor) broadcastStatus(name string, st config.StatusCode, pid int, restartCnt int) {
-	s.hub.BroadcastStatusChange(name, string(st), pid, restartCnt)
 }
 
 func (s *Supervisor) HandleReload() error {

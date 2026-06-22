@@ -52,11 +52,10 @@ build: front
 	mkdir -p bin
 	@for target in $(APP) $(COMMANDS); do \
 		if [ "$$target" = "$(APP)" ]; then src=.; else src=./cmd/$$target; fi; \
-		CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64  $(GOBUILD) -o bin/$$target.darwin-arm64       $$src && \
-		CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64  $(GOBUILD) -o bin/$$target.darwin-amd64       $$src && \
-		CGO_ENABLED=0 GOOS=linux   GOARCH=arm64  $(GOBUILD) -o bin/$$target.linux-arm64        $$src && \
-		CGO_ENABLED=0 GOOS=linux   GOARCH=amd64  $(GOBUILD) -o bin/$$target.linux-amd64        $$src && \
-		CGO_ENABLED=0 GOOS=windows GOARCH=amd64  $(GOBUILD) -o bin/$$target.windows-amd64.exe   $$src; \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GOBUILD) -o bin/$$target-$(VERSION).darwin-arm64 $$src && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).darwin-amd64 $$src && \
+		CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 $(GOBUILD) -o bin/$$target-$(VERSION).linux-arm64  $$src && \
+		CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).linux-amd64  $$src; \
 	done
 	@echo "✅ Build success."
 

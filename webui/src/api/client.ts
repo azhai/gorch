@@ -34,7 +34,14 @@ export interface APIResponse<T> {
   data?: T
 }
 
-let isRedirecting = false
+export class AuthError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AuthError'
+  }
+}
+
+export const authErrorEvent = new EventTarget()
 
 async function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const token = getToken()
@@ -48,11 +55,8 @@ async function authFetch(url: string, options?: RequestInit): Promise<Response> 
 
   if (res.status === 401) {
     removeToken()
-    if (!isRedirecting) {
-      isRedirecting = true
-      window.location.href = '/login'
-    }
-    throw new Error('authentication required')
+    authErrorEvent.dispatchEvent(new Event('auth-error'))
+    throw new AuthError('authentication required')
   }
 
   return res
@@ -105,10 +109,15 @@ export async function restartService(name: string): Promise<void> {
   await authFetch(`${API_BASE}/services/${name}/restart`, { method: 'POST' })
 }
 
-export async function fetchLogs(name: string, lines = 500): Promise<LogResponse> {
-  const res = await authFetch(`${API_BASE}/services/${name}/logs?lines=${lines}`)
+export async function fetchLogs(name: string, lines = 500, type: 'stdout' | 'stderr' = 'stdout'): Promise<LogResponse> {
+  const res = await authFetch(`${API_BASE}/services/${name}/logs?lines=${lines}&type=${type}`)
   const json: APIResponse<LogResponse> = await res.json()
-  return json.data || { lines: [], logPath: '' }
+  const data = json.data || { lines: [], logPath: '' }
+  return { ...data, lines: data.lines || [] }
+}
+
+export async function clearLogs(name: string, type: 'stdout' | 'stderr' = 'stdout'): Promise<void> {
+  await authFetch(`${API_BASE}/services/${name}/logs/clear?type=${type}`, { method: 'POST' })
 }
 
 export async function fetchServiceConfig(name: string): Promise<ServiceConfig> {
@@ -124,6 +133,42 @@ export async function updateServiceConfig(name: string, config: ServiceConfig): 
     body: JSON.stringify(config),
   })
   return res.json()
+}
+
+export async function saveConfigToFile(): Promise<APIResponse<{ message: string }>> {
+  const res = await authFetch(`${API_BASE}/save-config`, { method: 'POST' })
+  return res.json()
+}
+
+export async function createService(name: string, config: ServiceConfig): Promise<APIResponse<{ message: string }>> {
+  const res = await authFetch(`${API_BASE}/services`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, svc: config }),
+  })
+  return res.json()
+}
+
+export async function deleteService(name: string): Promise<APIResponse<{ message: string }>> {
+  const res = await authFetch(`${API_BASE}/services/${name}`, { method: 'DELETE' })
+  return res.json()
+}
+
+export interface CronValidationResult {
+  valid: boolean
+  message: string
+  nextRun?: string
+  nextRun2?: string
+}
+
+export async function validateCronExpression(expression: string): Promise<CronValidationResult> {
+  const res = await authFetch(`${API_BASE}/cron/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expression }),
+  })
+  const json: APIResponse<CronValidationResult> = await res.json()
+  return json.data || { valid: false, message: 'no response' }
 }
 
 export async function fetchCronHistory(name: string): Promise<unknown[]> {

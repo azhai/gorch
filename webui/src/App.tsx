@@ -4,11 +4,11 @@ import Logs from './views/logs'
 import Config from './views/config'
 import LoginView from './views/login'
 import AuthGuard from './components/authGuard'
-import { useWs } from './hooks/useWs'
+import { useSSE } from './hooks/useSSE'
 import { isAuthEnabled, getToken, removeToken } from './api/authStore'
 
 function AppLayout() {
-  const { connected } = useWs()
+  const { connected } = useSSE()
   const navigate = useNavigate()
 
   const handleLogout = () => {
@@ -57,7 +57,7 @@ function AppLayout() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className="max-w-5xl mx-auto px-4 py-6">
         <Outlet />
       </main>
     </div>

@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -195,38 +194,6 @@ func TestSupervisor_HandleCommand_Unknown(t *testing.T) {
 	if resp.Status != "error" {
 		t.Errorf("unknown action should return error, got %q", resp.Status)
 	}
-}
-
-// ── Test EnsureDir ───────────────────────────────────────
-
-func TestEnsureDir_NestedPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	targetPath := filepath.Join(tmpDir, "a", "b", "c", "file.txt")
-
-	err := EnsureDir(targetPath)
-	if err != nil {
-		t.Fatalf("EnsureDir() error = %v", err)
-	}
-
-	// Verify directory was created
-	info, err := os.Stat(filepath.Dir(targetPath))
-	if err != nil {
-		t.Fatalf("Stat error = %v", err)
-	}
-	if !info.IsDir() {
-		t.Error("path should be a directory")
-	}
-}
-
-func TestEnsureDir_SimplePath(t *testing.T) {
-	tmpDir := t.TempDir()
-	targetPath := filepath.Join(tmpDir, "file.txt")
-
-	err := EnsureDir(targetPath)
-	if err != nil {
-		t.Fatalf("EnsureDir() error = %v", err)
-	}
-	// Should succeed even if parent already exists
 }
 
 // ── Test Service PID File Management ─────────────────────

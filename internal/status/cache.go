@@ -1,8 +1,6 @@
 package status
 
 import (
-	"encoding/json"
-	"os"
 	"sync"
 	"time"
 
@@ -28,10 +26,6 @@ func (c *Cache) Update(name string, status ServiceStatus) {
 		status.Name = name
 	}
 
-	if status.Status == config.StatusRunning && status.Uptime == 0 {
-		status.Uptime = 0
-	}
-
 	c.statuses[name] = status
 }
 
@@ -40,6 +34,9 @@ func (c *Cache) Get(name string) (ServiceStatus, bool) {
 	defer c.mu.RUnlock()
 
 	st, ok := c.statuses[name]
+	if ok {
+		st = computeUptime(st)
+	}
 	return st, ok
 }
 
@@ -49,55 +46,14 @@ func (c *Cache) GetAll() map[string]ServiceStatus {
 
 	result := make(map[string]ServiceStatus, len(c.statuses))
 	for k, v := range c.statuses {
-		result[k] = v
+		result[k] = computeUptime(v)
 	}
 	return result
 }
 
-type StateFile struct {
-	Services map[string]ServiceState `json:"services"`
-}
-
-type ServiceState struct {
-	Status       config.StatusCode `json:"status"`
-	Pid          int               `json:"pid"`
-	RestartCount int               `json:"restartCount"`
-	ExitCode     *int              `json:"exitCode"`
-	StartedAt    *time.Time        `json:"startedAt,omitempty"`
-}
-
-func SaveState(path string, services map[string]ServiceStatus) error {
-	stateFile := StateFile{
-		Services: make(map[string]ServiceState),
+func computeUptime(st ServiceStatus) ServiceStatus {
+	if st.Status == config.StatusRunning && st.StartedAt > 0 {
+		st.Uptime = int64(time.Since(time.Unix(st.StartedAt, 0)).Seconds())
 	}
-
-	for name, st := range services {
-		stateFile.Services[name] = ServiceState{
-			Status:       st.Status,
-			Pid:          st.Pid,
-			RestartCount: st.RestartCount,
-			ExitCode:     st.ExitCode,
-		}
-	}
-
-	data, err := json.MarshalIndent(stateFile, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, data, 0600)
-}
-
-func LoadState(path string) (map[string]ServiceState, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var stateFile StateFile
-	if err := json.Unmarshal(data, &stateFile); err != nil {
-		return nil, err
-	}
-
-	return stateFile.Services, nil
+	return st
 }

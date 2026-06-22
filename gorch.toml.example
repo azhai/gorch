@@ -1,28 +1,39 @@
-[web]
-WEB_ENABLE = true
-WEB_ADDR = "127.0.0.1:8080"
-WEB_AUTH = true
-WEB_USER = "admin"
-WEB_PASS = "secret"
+LOG_DIR = '/var/log'
 
+[services]
 [services.api]
-EXEC_CMD = "python manage.py runserver 0.0.0.0:8000"
-WORK_DIR = "/app/backend"
-RESTART_POLICY = "on-failure"
 BACK_OFF = 5
-STDOUT = "/var/log/api.stdout.log"
-STDERR = "/var/log/api.stderr.log"
-DEPENDS_ON = ["postgres"]
 CRON = "0 */30 * * * *"
+DEPENDS_ON = ["postgres"]
 ENV_VARS = { DEBUG = "true", DATABASE_URL = "postgres://user:pass@localhost:5432/db" }
+EXEC_CMD = "python3 manage.py runserver 0.0.0.0:8000"
+RESTART_POLICY = "on-failure"
+STDOUT = "/var/log/api.out.log"
+STDERR = "/var/log/api.err.log"
+WORK_DIR = "/home/ryan/app/backend"
 
-[services.postgres]
-EXEC_CMD = "postgres -D /var/lib/postgres"
-RESTART_POLICY = "always"
+[services.godoc]
 BACK_OFF = 3
-STDOUT = "/var/log/postgres.log"
+EXEC_CMD = './bin/godoc -http=127.0.0.1:6060'
+RESTART_POLICY = 'on-failure'
+STDERR = '/var/log/godoc.err.log'
+STDOUT = '/var/log/godoc.out.log'
+WORK_DIR = '/home/ryan/gopath'
 
 [services.nginx]
+DEPENDS_ON = ["api"]
 EXEC_CMD = "nginx -g 'daemon off;'"
 RESTART_POLICY = "always"
-DEPENDS_ON = ["api"]
+
+[services.postgres]
+BACK_OFF = 3
+EXEC_CMD = "postgres -D /var/lib/postgres"
+RESTART_POLICY = "always"
+STDOUT = "/var/log/postgres.log"
+
+[web]
+WEB_AUTH = true
+WEB_ADDR = "127.0.0.1:8080"
+WEB_ENABLE = true
+WEB_PASS = 'secret'
+WEB_USER = 'admin'

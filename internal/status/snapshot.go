@@ -11,4 +11,5 @@ type ServiceStatus struct {
 	Uptime       int64             `json:"uptime"`
 	RestartCount int               `json:"restartCount"`
 	ExitCode     *int              `json:"exitCode"`
+	StartedAt    int64             `json:"startedAt,omitempty"`
 }
