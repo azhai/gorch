@@ -18,16 +18,21 @@ type SSEMessage struct {
 }
 
 type StatusChangePayload struct {
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	Pid          int    `json:"pid,omitempty"`
-	Uptime       int64  `json:"uptime,omitempty"`
-	RestartCount int    `json:"restartCount"`
-	ExitCode     *int   `json:"exitCode,omitempty"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Pid      int    `json:"pid,omitempty"`
+	Uptime   int64  `json:"uptime,omitempty"`
+	MemoryMB int64  `json:"memoryMB"`
+	ExitCode *int   `json:"exitCode,omitempty"`
 }
 
 type UptimeTickPayload struct {
-	Services map[string]int64 `json:"services"`
+	Services map[string]UptimeInfo `json:"services"`
+}
+
+type UptimeInfo struct {
+	Uptime   int64 `json:"uptime"`
+	MemoryMB int64 `json:"memoryMB"`
 }
 
 type Hub struct {
@@ -101,13 +106,13 @@ func (h *Hub) Stop() {
 	close(h.stopCh)
 }
 
-func (h *Hub) BroadcastStatusChange(name string, status string, pid int, uptime int64, restartCnt int) {
+func (h *Hub) BroadcastStatusChange(name string, status string, pid int, uptime int64, memoryMB int64) {
 	payload, _ := json.Marshal(StatusChangePayload{
-		Name:         name,
-		Status:       status,
-		Pid:          pid,
-		Uptime:       uptime,
-		RestartCount: restartCnt,
+		Name:     name,
+		Status:   status,
+		Pid:      pid,
+		Uptime:   uptime,
+		MemoryMB: memoryMB,
 	})
 
 	h.broadcast <- SSEMessage{
@@ -118,10 +123,13 @@ func (h *Hub) BroadcastStatusChange(name string, status string, pid int, uptime 
 }
 
 func (h *Hub) BroadcastUptimeTick(allStatus map[string]status.ServiceStatus) {
-	uptimes := make(map[string]int64, len(allStatus))
+	uptimes := make(map[string]UptimeInfo, len(allStatus))
 	for name, st := range allStatus {
 		if st.Status == "running" {
-			uptimes[name] = st.Uptime
+			uptimes[name] = UptimeInfo{
+				Uptime:   st.Uptime,
+				MemoryMB: st.MemoryMB,
+			}
 		}
 	}
 	if len(uptimes) == 0 {

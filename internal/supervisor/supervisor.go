@@ -247,6 +247,15 @@ func (s *Supervisor) GetStatus(name string) (status.ServiceStatus, bool) {
 }
 
 func (s *Supervisor) GetAllStatus() map[string]status.ServiceStatus {
+	// Refresh memory usage for running processes
+	s.mu.RLock()
+	for name, proc := range s.processes {
+		if proc.Cmd != nil && proc.Cmd.Process != nil {
+			memMB := getProcessMemoryMB(proc.Pid)
+			s.statusCache.UpdateMemory(name, memMB)
+		}
+	}
+	s.mu.RUnlock()
 	return s.statusCache.GetAll()
 }
 
@@ -275,19 +284,40 @@ func (s *Supervisor) UpdateServiceConfig(name string, svc config.ServiceConfig) 
 	}
 
 	s.cfg.Services[name] = svc
+
+	// 依赖关系可能变化，重算拓扑序
+	s.cfg.RecalcTopoOrder()
 	return nil
 }
 
 // CreateService adds a new service to the config.
 func (s *Supervisor) CreateService(name string, svc config.ServiceConfig) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if _, exists := s.cfg.Services[name]; exists {
+		s.mu.Unlock()
 		return fmt.Errorf("service already exists: %s", name)
 	}
 
 	s.cfg.Services[name] = svc
+
+	// 重算拓扑序，保证依赖启动顺序正确
+	s.cfg.RecalcTopoOrder()
+
+	// 写入 statusCache，否则 GetAllStatus 看不到新服务
+	s.statusCache.Update(name, status.ServiceStatus{
+		Name:   name,
+		Status: config.StatusStopped,
+	})
+	s.mu.Unlock()
+
+	// 注册 cron（如果有），需在锁外执行避免死锁
+	if svc.CRON != "" {
+		if err := s.registerCronJob(name, svc); err != nil {
+			slog.Error("failed to register cron for new service", "service", name, "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -317,6 +347,8 @@ func (s *Supervisor) DeleteService(name string) error {
 
 // SaveConfig persists the current config to the TOML file.
 func (s *Supervisor) SaveConfig() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.cfg.Save(s.configPath)
 }
 
@@ -384,13 +416,15 @@ func (s *Supervisor) startService(ctx context.Context, name string, svc config.S
 	}
 
 	s.processes[name] = proc
+	memMB := getProcessMemoryMB(proc.Pid)
 	s.statusCache.Update(name, status.ServiceStatus{
 		Name:      name,
 		Status:    config.StatusRunning,
 		Pid:       proc.Pid,
 		StartedAt: proc.StartTime.Unix(),
+		MemoryMB:  memMB,
 	})
-	s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, 0)
+	s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, memMB)
 
 	s.wg.Add(1)
 	go s.monitorLoop(ctx, name, svc)
@@ -412,10 +446,11 @@ func (s *Supervisor) stopService(name string) error {
 
 	delete(s.processes, name)
 	s.statusCache.Update(name, status.ServiceStatus{
-		Name:   name,
-		Status: config.StatusStopped,
+		Name:     name,
+		Status:   config.StatusStopped,
+		MemoryMB: 0,
 	})
-	s.hub.BroadcastStatusChange(name, string(config.StatusStopped), 0, 0, proc.RestartCnt)
+	s.hub.BroadcastStatusChange(name, string(config.StatusStopped), 0, 0, 0)
 
 	return nil
 }
@@ -461,6 +496,8 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 
 	if shouldRestart && proc.RestartCnt < maxRestartCount {
 		proc.RestartCnt++
+		// Remove old proc before starting new one
+		delete(s.processes, name)
 		s.mu.Unlock()
 
 		if svc.BACK_OFF > 0 {
@@ -468,9 +505,6 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 			time.Sleep(time.Duration(svc.BACK_OFF) * time.Second)
 		}
 
-		s.mu.Lock()
-		delete(s.processes, name)
-		s.mu.Unlock()
 		if err := s.startService(ctx, name, svc); err != nil {
 			slog.Error("restart failed", "service", name, "error", err)
 		}
@@ -488,37 +522,45 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 	}
 
 	s.statusCache.Update(name, status.ServiceStatus{
-		Name:         name,
-		Status:       finalStatus,
-		RestartCount: proc.RestartCnt,
-		ExitCode:     &exitCode,
+		Name:     name,
+		Status:   finalStatus,
+		ExitCode: &exitCode,
 	})
-	s.hub.BroadcastStatusChange(name, string(finalStatus), 0, 0, proc.RestartCnt)
+	s.hub.BroadcastStatusChange(name, string(finalStatus), 0, 0, 0)
 	s.mu.Unlock()
 }
 
 func (s *Supervisor) registerCronJob(name string, svc config.ServiceConfig) error {
 	return s.cronSched.AddJob(name, svc.CRON, "", func() {
-		slog.Info("cron triggered", "service", name)
+		slog.Info("cron triggered", "service", name, "command", svc.EXEC_CMD, "cron_expr", svc.CRON)
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
 		if _, running := s.processes[name]; running {
-			slog.Warn("cron overlap detected", "service", name)
+			slog.Warn("cron overlap detected, skipping", "service", name)
 			s.cronSched.RecordExecution(name, cron.CronExecutionRecord{
-				Service: name,
-				Status:  "overlap",
+				Service:   name,
+				StartedAt: time.Now(),
+				Status:    "overlap",
 			})
 			return
 		}
 
 		ctx := context.Background()
+		slog.Info("cron starting service", "service", name, "command", svc.EXEC_CMD)
 		if err := s.startService(ctx, name, svc); err != nil {
-			slog.Error("cron start failed", "service", name, "error", err)
+			slog.Error("cron start failed", "service", name, "error", err, "command", svc.EXEC_CMD)
+			s.cronSched.RecordExecution(name, cron.CronExecutionRecord{
+				Service:   name,
+				StartedAt: time.Now(),
+				Status:    "failed",
+			})
 			return
 		}
 
 		proc := s.processes[name]
+		slog.Info("cron service started", "service", name, "pid", proc.Pid)
+
 		exitCh, _ := MonitorProcess(proc)
 		exitCode := <-exitCh
 
@@ -533,6 +575,9 @@ func (s *Supervisor) registerCronJob(name string, svc config.ServiceConfig) erro
 		}
 		if exitCode != 0 {
 			record.Status = "failed"
+			slog.Error("cron service exited with error", "service", name, "exitCode", exitCode, "pid", proc.Pid)
+		} else {
+			slog.Info("cron service completed successfully", "service", name, "exitCode", exitCode, "pid", proc.Pid)
 		}
 		s.cronSched.RecordExecution(name, record)
 

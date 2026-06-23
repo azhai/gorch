@@ -8,10 +8,8 @@ export default function Config() {
   const [originalConfig, setOriginalConfig] = useState<ServiceConfig | null>(null)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-
-  // New service state
-  const [showNewDialog, setShowNewDialog] = useState(false)
-  const [newName, setNewName] = useState('')
+  const [isCreating, setIsCreating] = useState(false)
+  const [creatingName, setCreatingName] = useState('')
 
   // Cron validation state
   const [cronValidating, setCronValidating] = useState(false)
@@ -76,28 +74,25 @@ export default function Config() {
   }
 
   const handleCreate = async () => {
-    if (!newName.trim()) return
+    const name = creatingName.trim()
+    if (!name) {
+      setMessage('Service name is required')
+      return
+    }
+    if (!config || !config.EXEC_CMD.trim()) {
+      setMessage('EXEC_CMD is required')
+      return
+    }
     setSaving(true)
     setMessage(null)
     try {
-      const defaultConfig: ServiceConfig = {
-        WORK_DIR: '.',
-        EXEC_CMD: '',
-        RESTART_POLICY: 'never',
-        BACK_OFF: 0,
-        STDOUT: '',
-        STDERR: '',
-        DEPENDS_ON: [],
-        CRON: '',
-        ENV_VARS: {},
-      }
-      const res = await createService(newName.trim(), defaultConfig)
+      const res = await createService(name, config)
       if (res.success) {
-        setShowNewDialog(false)
-        setNewName('')
-        setSelected(newName.trim())
+        setIsCreating(false)
+        setCreatingName('')
+        setSelected(name)
         fetchServices().then(setServices)
-        setMessage('Service created')
+        setMessage('Service created and saved to file.')
       } else {
         setMessage(res.message || 'Create failed')
       }
@@ -158,7 +153,14 @@ export default function Config() {
 
   const addEnvVar = () => {
     if (!config) return
-    setConfig({ ...config, ENV_VARS: { ...config.ENV_VARS, '': '' } })
+    // 避免重复空key导致覆盖，生成唯一占位名
+    let base = 'NEW_VAR'
+    let name = base
+    let i = 1
+    while (config.ENV_VARS[name] !== undefined) {
+      name = `${base}_${i++}`
+    }
+    setConfig({ ...config, ENV_VARS: { ...config.ENV_VARS, [name]: '' } })
   }
 
   const removeEnvVar = (key: string) => {
@@ -174,7 +176,11 @@ export default function Config() {
         <h2 className="text-lg font-semibold text-gray-800">Configuration</h2>
         <select
           value={selected}
-          onChange={(e) => { setSelected(e.target.value); setMessage(null) }}
+          onChange={(e) => {
+            setSelected(e.target.value)
+            setMessage(null)
+            setIsCreating(false)
+          }}
           className="px-3 py-1.5 text-sm border border-macaron-peach rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
         >
           <option value="">Select service...</option>
@@ -183,12 +189,29 @@ export default function Config() {
           ))}
         </select>
         <button
-          onClick={() => setShowNewDialog(true)}
+          onClick={() => {
+            setSelected('')
+            setCreatingName('')
+            setConfig({
+              WORK_DIR: '.',
+              EXEC_CMD: '',
+              RESTART_POLICY: 'never',
+              BACK_OFF: 0,
+              STDOUT: '',
+              STDERR: '',
+              DEPENDS_ON: [],
+              CRON: '',
+              ENV_VARS: {},
+            })
+            setOriginalConfig(null)
+            setIsCreating(true)
+            setMessage(null)
+          }}
           className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
         >
           + New
         </button>
-        {selected && (
+        {selected && !isCreating && (
           <button
             onClick={handleDelete}
             className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
@@ -198,37 +221,20 @@ export default function Config() {
         )}
       </div>
 
-      {showNewDialog && (
-        <div className="bg-white rounded-xl border border-macaron-peach/60 p-4 mb-4">
-          <h3 className="text-sm font-medium text-gray-700 mb-2">New Service</h3>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Service name"
-              className="flex-1 px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            />
-            <button
-              onClick={handleCreate}
-              disabled={!newName.trim()}
-              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40"
-            >
-              Create
-            </button>
-            <button
-              onClick={() => { setShowNewDialog(false); setNewName('') }}
-              className="px-4 py-1.5 text-sm text-gray-500 hover:text-gray-700"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
       {config ? (
         <div className="bg-white rounded-xl border border-macaron-peach/60 p-4 space-y-3">
+          {isCreating && (
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Service Name <span className="text-red-500">*</span></label>
+              <input
+                type="text"
+                value={creatingName}
+                onChange={(e) => setCreatingName(e.target.value)}
+                className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                placeholder="e.g. my-service"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">EXEC_CMD <span className="text-gray-400">(Command)</span></label>
             <input
@@ -345,9 +351,12 @@ export default function Config() {
                     type="text"
                     value={key}
                     onChange={(e) => {
+                      const newKey = e.target.value
+                      // 防止key冲突导致静默数据丢失
+                      if (newKey !== key && config.ENV_VARS[newKey] !== undefined) return
                       const envs = { ...config.ENV_VARS }
                       delete envs[key]
-                      envs[e.target.value] = value
+                      envs[newKey] = value
                       updateField('ENV_VARS', envs)
                     }}
                     className="w-1/3 px-2 py-1 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
@@ -371,7 +380,7 @@ export default function Config() {
 
           {message && (
             <div className={`text-sm rounded-lg px-3 py-2 ${
-              message.includes('applied')
+              message.includes('applied') || message.includes('successfully')
                 ? 'bg-blue-100 text-blue-700'
                 : message.includes('saved') || message.includes('created') || message.includes('deleted')
                   ? 'bg-emerald-100 text-emerald-700'
@@ -382,13 +391,23 @@ export default function Config() {
           )}
 
           <div className="flex items-center gap-3 pt-2">
-            <button
-              onClick={handleSave}
-              disabled={!hasChanges || saving}
-              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {saving ? 'Applying...' : 'Apply'}
-            </button>
+            {isCreating ? (
+              <button
+                onClick={handleCreate}
+                disabled={!creatingName.trim() || !config?.EXEC_CMD?.trim() || saving}
+                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {saving ? 'Creating...' : 'Create Service'}
+              </button>
+            ) : (
+              <button
+                onClick={handleSave}
+                disabled={!hasChanges || saving}
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {saving ? 'Applying...' : 'Apply'}
+              </button>
+            )}
             <button
               onClick={handleSaveToFile}
               disabled={saving}
@@ -396,11 +415,26 @@ export default function Config() {
             >
               {saving ? 'Saving...' : 'Save to File'}
             </button>
+            {isCreating && (
+              <button
+                onClick={() => {
+                  setIsCreating(false)
+                  setCreatingName('')
+                  setSelected('')
+                  setConfig(null)
+                  setOriginalConfig(null)
+                  setMessage(null)
+                }}
+                className="px-4 py-1.5 text-sm text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-macaron-peach/60 p-4">
-          <p className="text-sm text-gray-400">Select a service to edit its configuration</p>
+          <p className="text-sm text-gray-400">Select a service to edit its configuration, or click "+ New" to create a new service</p>
         </div>
       )}
     </div>

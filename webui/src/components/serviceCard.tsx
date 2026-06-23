@@ -45,7 +45,8 @@ export function ServiceCard({ service, onAction, showToast }: ServiceCardProps) 
     if (!seconds) return '-'
     const h = Math.floor(seconds / 3600)
     const m = Math.floor((seconds % 3600) / 60)
-    return h > 0 ? `${h}h ${m}m` : `${m}m`
+    const s = seconds % 60
+    return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`
   }
 
   return (
@@ -68,8 +69,8 @@ export function ServiceCard({ service, onAction, showToast }: ServiceCardProps) 
           <span className="text-gray-700">{formatUptime(service.uptime)}</span>
         </div>
         <div>
-          <span className="block text-gray-400">Restarts</span>
-          <span className="text-gray-700">{service.restartCount}</span>
+          <span className="block text-gray-400">Memory</span>
+          <span className="text-gray-700">{service.memoryMB ? `${service.memoryMB} MB` : '-'}</span>
         </div>
       </div>
 

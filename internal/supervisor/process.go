@@ -105,27 +105,35 @@ func StopProcess(proc *ProcessInfo, timeout time.Duration) error {
 		return nil
 	}
 
+	// Signal the process group
 	if err := proc.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("failed to send SIGTERM to service '%s': %w", proc.Name, err)
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := proc.Cmd.Process.Wait()
-		done <- err
-	}()
-
-	select {
-	case <-done:
-		proc.CloseFiles()
-	case <-time.After(timeout):
-		if err := proc.Cmd.Process.Signal(syscall.SIGKILL); err != nil {
-			return fmt.Errorf("failed to send SIGKILL to service '%s': %w", proc.Name, err)
+	// Wait for process to exit by polling, not calling Wait()
+	// (Wait() is already called by MonitorProcess goroutine)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := proc.Cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			// Process no longer exists
+			break
 		}
-		<-done
-		proc.CloseFiles()
+		time.Sleep(50 * time.Millisecond)
 	}
 
+	// Force kill if still running
+	if err := proc.Cmd.Process.Signal(syscall.Signal(0)); err == nil {
+		killProcessGroup(proc.Cmd.Process.Pid)
+		// Wait a bit for it to die
+		for time.Now().Before(time.Now().Add(5 * time.Second)) {
+			if err := proc.Cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	proc.CloseFiles()
 	RemoveServicePidFile(proc.Name)
 	return nil
 }

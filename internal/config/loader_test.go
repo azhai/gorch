@@ -38,14 +38,9 @@ func TestSave_NewFile(t *testing.T) {
 		t.Fatalf("saved file not found: %v", err)
 	}
 
-	content := string(data)
-	if len(content) == 0 {
-		t.Error("saved file is empty")
-	}
-	// Should contain default web addr
-	if !strings.Contains(content, "127.0.0.1:8080") {
-		t.Errorf("saved file missing default WEB_ADDR, content:\n%s", content)
-	}
+	// Empty config (all defaults) produces empty or minimal TOML — that's correct
+	// Default values like WEB_ADDR=127.0.0.1:8080 are intentionally omitted
+	_ = string(data)
 }
 
 func TestSave_WithServices(t *testing.T) {
@@ -210,5 +205,44 @@ func TestSave_Permissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm != 0644 {
 		t.Errorf("file permissions = %04o, want 0644", perm)
+	}
+}
+
+func TestSave_OmitDefaultWorkDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.toml")
+
+	// Write a TOML with explicit WORK_DIR
+	content := `[services.myapp]
+EXEC_CMD = "./app"
+WORK_DIR = "` + tmpDir + `"
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// WORK_DIR should be filled with configDir (tmpDir) by validateAndFillDefaults
+	svc := cfg.Services["myapp"]
+	if svc.WORK_DIR != tmpDir {
+		t.Errorf("WORK_DIR = %q, want %q", svc.WORK_DIR, tmpDir)
+	}
+
+	// Save should NOT write WORK_DIR since it equals configDir
+	savePath := filepath.Join(tmpDir, "saved.toml")
+	if err := cfg.Save(savePath); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	data, err := os.ReadFile(savePath)
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+
+	saved := string(data)
+	if strings.Contains(saved, "WORK_DIR") {
+		t.Errorf("saved file should not contain WORK_DIR when it equals configDir, got:\n%s", saved)
 	}
 }

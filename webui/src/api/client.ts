@@ -7,7 +7,7 @@ export interface ServiceStatus {
   status: string
   pid: number
   uptime: number
-  restartCount: number
+  memoryMB: number
   exitCode: number | null
 }
 

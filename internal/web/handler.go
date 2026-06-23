@@ -2,7 +2,9 @@ package web
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/azhai/gorch/internal/config"
@@ -59,7 +61,7 @@ func (s *Server) handleGetServices(c fiber.Ctx) error {
 }
 
 func (s *Server) handleGetService(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	st, ok := s.supervisor.GetStatus(name)
 	if !ok {
 		return c.Status(404).JSON(errResponse("service not found: " + name))
@@ -68,7 +70,7 @@ func (s *Server) handleGetService(c fiber.Ctx) error {
 }
 
 func (s *Server) handleStartService(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	if err := s.supervisor.StartService(c.Context(), name); err != nil {
 		return c.JSON(errResponse(err.Error()))
 	}
@@ -76,7 +78,7 @@ func (s *Server) handleStartService(c fiber.Ctx) error {
 }
 
 func (s *Server) handleStopService(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	if err := s.supervisor.StopService(c.Context(), name); err != nil {
 		return c.JSON(errResponse(err.Error()))
 	}
@@ -84,7 +86,7 @@ func (s *Server) handleStopService(c fiber.Ctx) error {
 }
 
 func (s *Server) handleRestartService(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	if err := s.supervisor.RestartService(c.Context(), name); err != nil {
 		return c.JSON(errResponse(err.Error()))
 	}
@@ -92,7 +94,7 @@ func (s *Server) handleRestartService(c fiber.Ctx) error {
 }
 
 func (s *Server) handleGetLogs(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	lines := 500
 	if l := c.Query("lines"); l != "" {
 		if v, err := strconv.Atoi(l); err == nil {
@@ -108,22 +110,13 @@ func (s *Server) handleGetLogs(c fiber.Ctx) error {
 		return c.Status(404).JSON(errResponse("service not found: " + name))
 	}
 
-	var logPath string
-	switch logType {
-	case "stderr":
+	// ponytail: 原有17行冗余逻辑，switch已赋值，内层if重复赋相同值
+	logPath := svc.STDOUT
+	if logType == "stderr" {
 		logPath = svc.STDERR
-	default:
-		logPath = svc.STDOUT
 	}
 	if logPath == "" {
-		if logType == "stderr" {
-			logPath = svc.STDERR
-		} else {
-			logPath = svc.STDOUT
-		}
-		if logPath == "" {
-			logPath = svc.STDERR
-		}
+		logPath = svc.STDERR
 	}
 
 	logMgr := s.supervisor.GetLogManager()
@@ -148,7 +141,7 @@ func (s *Server) handleGetLogs(c fiber.Ctx) error {
 }
 
 func (s *Server) handleClearLogs(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	logType := c.Query("type", "stdout")
 
 	cfg := s.supervisor.GetConfig()
@@ -157,22 +150,13 @@ func (s *Server) handleClearLogs(c fiber.Ctx) error {
 		return c.Status(404).JSON(errResponse("service not found: " + name))
 	}
 
-	var logPath string
-	switch logType {
-	case "stderr":
+	// ponytail: 同handleGetLogs，缩减冗余
+	logPath := svc.STDOUT
+	if logType == "stderr" {
 		logPath = svc.STDERR
-	default:
-		logPath = svc.STDOUT
 	}
 	if logPath == "" {
-		if logType == "stderr" {
-			logPath = svc.STDERR
-		} else {
-			logPath = svc.STDOUT
-		}
-		if logPath == "" {
-			logPath = svc.STDERR
-		}
+		logPath = svc.STDERR
 	}
 
 	logMgr := s.supervisor.GetLogManager()
@@ -184,7 +168,7 @@ func (s *Server) handleClearLogs(c fiber.Ctx) error {
 }
 
 func (s *Server) handleGetConfig(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	cfg := s.supervisor.GetConfig()
 
 	svc, exists := cfg.Services[name]
@@ -196,7 +180,8 @@ func (s *Server) handleGetConfig(c fiber.Ctx) error {
 }
 
 func (s *Server) handleUpdateConfig(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
+	slog.Debug("update config", "service", name, "body_len", len(c.Body()))
 
 	cfg := s.supervisor.GetConfig()
 	if _, exists := cfg.Services[name]; !exists {
@@ -207,6 +192,8 @@ func (s *Server) handleUpdateConfig(c fiber.Ctx) error {
 	if err := c.Bind().Body(&svc); err != nil {
 		return c.Status(400).JSON(errResponse("invalid request body: " + err.Error()))
 	}
+
+	slog.Debug("update config parsed", "service", name, "exec_cmd", svc.EXEC_CMD, "work_dir", svc.WORK_DIR)
 
 	if svc.EXEC_CMD == "" {
 		return c.Status(400).JSON(errResponse("EXEC_CMD is required"))
@@ -234,6 +221,12 @@ func (s *Server) handleUpdateConfig(c fiber.Ctx) error {
 }
 
 func (s *Server) handleSaveConfigToFile(c fiber.Ctx) error {
+	cfg := s.supervisor.GetConfig()
+	names := make([]string, 0, len(cfg.Services))
+	for n := range cfg.Services {
+		names = append(names, n)
+	}
+	slog.Debug("save config to file", "services", names)
 	if err := s.supervisor.SaveConfig(); err != nil {
 		return c.JSON(errResponse("save failed: " + err.Error()))
 	}
@@ -241,7 +234,7 @@ func (s *Server) handleSaveConfigToFile(c fiber.Ctx) error {
 }
 
 func (s *Server) handleGetCronHistory(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 	sched := s.supervisor.GetCronScheduler()
 	history := sched.GetHistory(name)
 	return c.JSON(okResponse(history))
@@ -277,7 +270,7 @@ func (s *Server) handleCreateService(c fiber.Ctx) error {
 }
 
 func (s *Server) handleDeleteService(c fiber.Ctx) error {
-	name := c.Params("name")
+	name := strings.Clone(c.Params("name"))
 
 	if err := s.supervisor.DeleteService(name); err != nil {
 		return c.JSON(errResponse(err.Error()))

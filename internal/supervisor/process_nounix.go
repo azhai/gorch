@@ -16,3 +16,8 @@ func killProcessGroup(pid int) {
 		p.Kill()
 	}
 }
+
+// getProcessMemoryMB is not supported on non-Unix platforms.
+func getProcessMemoryMB(pid int) int64 {
+	return 0
+}

@@ -39,7 +39,9 @@ func NewServer(addr string, sup SupervisorProvider) *Server {
 	}
 
 	app := fiber.New(fiber.Config{
-		AppName: "gorch",
+		AppName:      "gorch",
+		ReadTimeout:  0, // 禁用读取超时以支持SSE长连接
+		WriteTimeout: 0, // 禁用写入超时
 	})
 
 	app.Use(corsMiddleware())

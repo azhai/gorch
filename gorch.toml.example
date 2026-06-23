@@ -31,6 +31,12 @@ EXEC_CMD = "postgres -D /var/lib/postgres"
 RESTART_POLICY = "always"
 STDOUT = "/var/log/postgres.log"
 
+[services.test]
+CRON = "30 */5 9-17 * * *"
+EXEC_CMD = "/bin/date >> /tmp/time.log"
+STDERR = '/var/log/test.err.log'
+STDOUT = '/var/log/test.out.log'
+
 [web]
 WEB_AUTH = true
 WEB_ADDR = "127.0.0.1:8080"

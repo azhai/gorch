@@ -2,13 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchServices, ServiceStatus } from '../api/client'
 import { ServiceCard } from '../components/serviceCard'
 import { Toast, useToast } from '../components/toast'
-import { Dialog, useDialog } from '../components/dialog'
 import { useSSE } from '../hooks/useSSE'
 
 export default function Dashboard() {
   const [services, setServices] = useState<ServiceStatus[]>([])
   const { showToast, toast } = useToast()
-  const { dialog, showDialog } = useDialog()
   const { lastMessage } = useSSE()
   const lastServerUptime = useRef<Record<string, number>>({})
 
@@ -16,7 +14,6 @@ export default function Dashboard() {
     try {
       const data = await fetchServices()
       setServices(data)
-      // store server uptime as baseline
       const baseline: Record<string, number> = {}
       for (const s of data) {
         if (s.status === 'running' && s.uptime > 0) {
@@ -26,9 +23,8 @@ export default function Dashboard() {
       lastServerUptime.current = baseline
     } catch (err) {
       if (err instanceof Error && err.name === 'AuthError') return
-      showDialog('Load Failed', String(err))
     }
-  }, [showDialog])
+  }, [])
 
   useEffect(() => {
     loadServices()
@@ -44,12 +40,12 @@ export default function Dashboard() {
         status: string
         pid?: number
         uptime?: number
-        restartCount: number
+        memoryMB: number
       }
       setServices((prev) =>
         prev.map((s) => {
           if (s.name !== payload.name) return s
-          const updated = { ...s, status: payload.status, pid: payload.pid || 0, restartCount: payload.restartCount }
+          const updated = { ...s, status: payload.status, pid: payload.pid || 0, memoryMB: payload.memoryMB }
           if (payload.uptime !== undefined) {
             updated.uptime = payload.uptime
             lastServerUptime.current[payload.name] = payload.uptime
@@ -63,13 +59,13 @@ export default function Dashboard() {
     }
 
     if (lastMessage.type === 'uptime_tick') {
-      const payload = lastMessage.payload as { services: Record<string, number> }
-      lastServerUptime.current = { ...lastServerUptime.current, ...payload.services }
+      const payload = lastMessage.payload as { services: Record<string, { uptime: number; memoryMB: number }> }
+      lastServerUptime.current = { ...Object.fromEntries(Object.entries(payload.services).map(([k, v]) => [k, v.uptime])) }
       setServices((prev) =>
         prev.map((s) => {
-          const serverUptime = payload.services[s.name]
-          if (serverUptime !== undefined) {
-            return { ...s, uptime: serverUptime }
+          const info = payload.services[s.name]
+          if (info !== undefined) {
+            return { ...s, uptime: info.uptime, memoryMB: info.memoryMB }
           }
           return s
         })
@@ -82,8 +78,8 @@ export default function Dashboard() {
     const timer = setInterval(() => {
       setServices((prev) =>
         prev.map((s) => {
-          if (s.status === 'running' && s.uptime > 0) {
-            return { ...s, uptime: s.uptime + 1 }
+          if (s.status === 'running') {
+            return { ...s, uptime: (s.uptime || 0) + 1 }
           }
           return s
         })
@@ -113,7 +109,6 @@ export default function Dashboard() {
       )}
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => {}} />}
-      {dialog && <Dialog title={dialog.title} message={dialog.message} onClose={() => {}} />}
     </div>
   )
 }

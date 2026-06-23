@@ -54,6 +54,25 @@ func staticAssetHandler(c fiber.Ctx) error {
 }
 
 func spaFallbackHandler(c fiber.Ctx) error {
+	reqPath := c.Path()
+	cleaned := path.Clean(reqPath)
+	if strings.Contains(cleaned, "..") {
+		return c.SendStatus(403)
+	}
+
+	if cleaned != "/" && cleaned != "" {
+		fileName := strings.TrimPrefix(cleaned, "/")
+		fsys := getFileSystem()
+		data, err := fs.ReadFile(fsys, fileName)
+		if err == nil {
+			ext := path.Ext(fileName)
+			if ext != "" {
+				c.Type(strings.TrimPrefix(ext, "."))
+			}
+			return c.Send(data)
+		}
+	}
+
 	fsys := getFileSystem()
 	data, err := fs.ReadFile(fsys, "index.html")
 	if err != nil {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,6 +58,13 @@ func (c *Config) TopologicalOrder() []string {
 	return c.topoOrder
 }
 
+// RecalcTopoOrder recalculates the topological order after service changes.
+func (c *Config) RecalcTopoOrder() {
+	if order, err := topologicalSort(c.Services); err == nil {
+		c.topoOrder = order
+	}
+}
+
 // New creates a new empty config with default values.
 func New() *Config {
 	return &Config{
@@ -66,12 +74,13 @@ func New() *Config {
 }
 
 // cleanServiceConfig returns a copy with empty/zero fields removed so they won't appear in the saved TOML.
-func cleanServiceConfig(svc ServiceConfig) map[string]any {
+// configDir is used to filter out the default WORK_DIR value filled by validateAndFillDefaults.
+func cleanServiceConfig(svc ServiceConfig, configDir string) map[string]any {
 	clean := make(map[string]any)
 	if svc.EXEC_CMD != "" {
 		clean["EXEC_CMD"] = svc.EXEC_CMD
 	}
-	if svc.WORK_DIR != "" && svc.WORK_DIR != "." {
+	if svc.WORK_DIR != "" && svc.WORK_DIR != "." && svc.WORK_DIR != configDir {
 		clean["WORK_DIR"] = svc.WORK_DIR
 	}
 	if svc.RESTART_POLICY != "" && svc.RESTART_POLICY != string(RestartNever) {
@@ -112,9 +121,14 @@ func (c *Config) Save(path string) error {
 	}
 
 	// Build a clean map — omit empty service fields
+	configDir := filepath.Dir(absPath)
 	services := make(map[string]any, len(c.Services))
 	for name, svc := range c.Services {
-		clean := cleanServiceConfig(svc)
+		// Log service names for debugging name corruption issues
+		if strings.ContainsAny(name, "/\\.") {
+			slog.Warn("service name contains special characters", "service", name)
+		}
+		clean := cleanServiceConfig(svc, configDir)
 		if len(clean) > 0 {
 			services[name] = clean
 		}

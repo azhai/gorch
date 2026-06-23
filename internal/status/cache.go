@@ -29,6 +29,17 @@ func (c *Cache) Update(name string, status ServiceStatus) {
 	c.statuses[name] = status
 }
 
+// UpdateMemory updates only the MemoryMB field for a service.
+func (c *Cache) UpdateMemory(name string, memoryMB int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if st, ok := c.statuses[name]; ok {
+		st.MemoryMB = memoryMB
+		c.statuses[name] = st
+	}
+}
+
 func (c *Cache) Get(name string) (ServiceStatus, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <clipPath id="cube">
+      <path d="M32 3 L56 17 L56 47 L32 61 L8 47 L8 17Z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#cube)">
+    <path d="M32 3 L56 17 L32 31 L8 17Z" fill="#CFD8DC"/>
+    <path d="M8 17 L32 31 L32 61 L8 47Z" fill="#B0BEC5"/>
+    <path d="M56 17 L32 31 L32 61 L56 47Z" fill="#ECEFF1"/>
+    <line x1="32" y1="3" x2="32" y2="31" stroke="#90A4AE" stroke-width="0.8" opacity="0.3"/>
+    <line x1="8" y1="17" x2="32" y2="31" stroke="#90A4AE" stroke-width="0.8" opacity="0.3"/>
+    <line x1="56" y1="17" x2="32" y2="31" stroke="#90A4AE" stroke-width="0.8" opacity="0.3"/>
+    <line x1="32" y1="31" x2="32" y2="61" stroke="#90A4AE" stroke-width="0.8" opacity="0.3"/>
+    <line x1="20" y1="24" x2="44" y2="54" stroke="#90A4AE" stroke-width="0.8" opacity="0.3"/>
+    <line x1="44" y1="24" x2="20" y2="54" stroke="#90A4AE" stroke-width="0.8" opacity="0.3"/>
+    <path d="M20 10 L32 17 L32 3Z" fill="#80CBC4" opacity="0.95"/>
+    <path d="M44 39 L56 47 L56 33Z" fill="#80CBC4" opacity="0.9"/>
+    <path d="M20 47 L32 54 L20 54Z" fill="#80CBC4" opacity="0.85"/>
+  </g>
+  <path d="M32 3 L56 17 L56 47 L32 61 L8 47 L8 17Z" fill="none" stroke="#B0BEC5" stroke-width="1.2"/>
+</svg>
