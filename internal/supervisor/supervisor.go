@@ -684,6 +684,21 @@ func (s *Supervisor) detectDaemonize(proc *ProcessInfo, svc config.ServiceConfig
 	return 0
 }
 
+// findDaemonizedMaster checks if a process that just exited has a replacement
+// (daemonize pattern). Checks PID_FILE first, then falls back to findMainProcessByName.
+func findDaemonizedMaster(proc *ProcessInfo, svc config.ServiceConfig) int {
+	if svc.PID_FILE != "" {
+		if pid := tryReadUserPidFile(svc.PID_FILE); pid > 0 && pid != proc.Pid {
+			return pid
+		}
+	}
+	found := findMainProcessByName(svc.EXEC_CMD)
+	if found > 0 && found != proc.Pid {
+		return found
+	}
+	return 0
+}
+
 func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.ServiceConfig) {
 	defer s.wg.Done()
 
@@ -703,6 +718,35 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 
 	// Check manual stop without holding the lock (set by stopService before we get here)
 	if proc.ManualStop {
+		return
+	}
+
+	// Check if the process daemonized (forked a new master and exited the original
+	// PID). This handles cases where detectDaemonize's 500ms timeout was too short.
+	if newPid := findDaemonizedMaster(proc, svc); newPid > 0 {
+		s.mu.Lock()
+		if proc.ManualStop {
+			s.mu.Unlock()
+			return
+		}
+		slog.Info("process daemonized, switching to new master PID",
+			"service", name, "oldPid", proc.Pid, "newPid", newPid)
+		proc.Pid = newPid
+		proc.Adopted = true
+		proc.Cmd = nil
+		WriteServicePidFile(name, newPid)
+		treeMB := getProcessTreeMemoryMB(newPid)
+		s.statusCache.Update(name, status.ServiceStatus{
+			Name:      name,
+			Status:    config.StatusRunning,
+			Pid:       newPid,
+			StartedAt: proc.StartTime.Unix(),
+			MemoryMB:  treeMB,
+		})
+		s.hub.BroadcastStatusChange(name, string(config.StatusRunning), newPid, 0, treeMB)
+		s.mu.Unlock()
+		s.wg.Add(1)
+		go s.monitorAdoptedLoop(ctx, name, svc)
 		return
 	}
 
@@ -728,6 +772,12 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 		// Remove old proc before starting new one
 		delete(s.processes, name)
 		s.mu.Unlock()
+
+		// Skip restart if supervisor is shutting down
+		if ctx.Err() != nil {
+			slog.Info("context canceled, skipping restart", "service", name)
+			return
+		}
 
 		// Force back-off to allow port/resource release; default 2s if unset
 		backOff := svc.BACK_OFF
@@ -819,6 +869,12 @@ exited:
 		restartCnt := proc.RestartCnt + 1
 		delete(s.processes, name)
 		s.mu.Unlock()
+
+		// Skip restart if supervisor is shutting down
+		if ctx.Err() != nil {
+			slog.Info("context canceled, skipping restart", "service", name)
+			return
+		}
 
 		backOff := svc.BACK_OFF
 		if backOff <= 0 {
