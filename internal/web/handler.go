@@ -3,12 +3,13 @@ package web
 import (
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/azhai/gorch/internal/config"
-	"github.com/gofiber/fiber/v3"
+	"github.com/labstack/echo/v4"
 	"github.com/robfig/cron/v3"
 )
 
@@ -27,90 +28,68 @@ func errResponse(msg string) APIResponse {
 	return APIResponse{Success: false, Message: msg}
 }
 
-func (s *Server) setupRoutes() {
-	api := s.app.Group("/api")
-
-	api.Post("/auth/login", func(c fiber.Ctx) error {
-		return handleLogin(c, s.supervisor.GetConfig().Web)
-	})
-
-	api.Get("/services", s.handleGetServices)
-	api.Post("/services", s.handleCreateService)
-	api.Get("/services/:name", s.handleGetService)
-	api.Post("/services/:name/start", s.handleStartService)
-	api.Post("/services/:name/stop", s.handleStopService)
-	api.Post("/services/:name/restart", s.handleRestartService)
-	api.Get("/services/:name/logs", s.handleGetLogs)
-	api.Post("/services/:name/logs/clear", s.handleClearLogs)
-	api.Get("/services/:name/config", s.handleGetConfig)
-	api.Put("/services/:name/config", s.handleUpdateConfig)
-	api.Post("/save-config", s.handleSaveConfigToFile)
-	api.Delete("/services/:name", s.handleDeleteService)
-	api.Get("/cron/:name/history", s.handleGetCronHistory)
-	api.Post("/cron/validate", s.handleValidateCron)
-
-	api.Get("/events", s.handleSSE)
-
-	s.app.Get("/assets/*", staticAssetHandler)
-	s.app.Get("/*", spaFallbackHandler)
+func jsonResponse(c echo.Context, status int, resp APIResponse) error {
+	return c.JSON(status, resp)
 }
 
-func (s *Server) handleGetServices(c fiber.Ctx) error {
+func (s *Server) handleGetServices(c echo.Context) error {
 	allStatus := s.supervisor.GetAllStatus()
-	return c.JSON(okResponse(allStatus))
+	return c.JSON(http.StatusOK, okResponse(allStatus))
 }
 
-func (s *Server) handleGetService(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
+func (s *Server) handleGetService(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
 	st, ok := s.supervisor.GetStatus(name)
 	if !ok {
-		return c.Status(404).JSON(errResponse("service not found: " + name))
+		return c.JSON(http.StatusNotFound, errResponse("service not found: "+name))
 	}
-	return c.JSON(okResponse(st))
+	return c.JSON(http.StatusOK, okResponse(st))
 }
 
-func (s *Server) handleStartService(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
-	if err := s.supervisor.StartService(c.Context(), name); err != nil {
-		return c.JSON(errResponse(err.Error()))
+func (s *Server) handleStartService(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
+	if err := s.supervisor.StartService(c.Request().Context(), name); err != nil {
+		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
-	return c.JSON(okResponse(map[string]string{"message": "service " + name + " started"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + name + " started"}))
 }
 
-func (s *Server) handleStopService(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
-	if err := s.supervisor.StopService(c.Context(), name); err != nil {
-		return c.JSON(errResponse(err.Error()))
+func (s *Server) handleStopService(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
+	if err := s.supervisor.StopService(c.Request().Context(), name); err != nil {
+		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
-	return c.JSON(okResponse(map[string]string{"message": "service " + name + " stopped"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + name + " stopped"}))
 }
 
-func (s *Server) handleRestartService(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
-	if err := s.supervisor.RestartService(c.Context(), name); err != nil {
-		return c.JSON(errResponse(err.Error()))
+func (s *Server) handleRestartService(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
+	if err := s.supervisor.RestartService(c.Request().Context(), name); err != nil {
+		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
-	return c.JSON(okResponse(map[string]string{"message": "service " + name + " restarted"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + name + " restarted"}))
 }
 
-func (s *Server) handleGetLogs(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
+func (s *Server) handleGetLogs(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
 	lines := 500
-	if l := c.Query("lines"); l != "" {
+	if l := c.QueryParam("lines"); l != "" {
 		if v, err := strconv.Atoi(l); err == nil {
 			lines = v
 		}
 	}
 
-	logType := c.Query("type", "stdout")
+	logType := c.QueryParam("type")
+	if logType == "" {
+		logType = "stdout"
+	}
 
 	cfg := s.supervisor.GetConfig()
 	svc, exists := cfg.Services[name]
 	if !exists {
-		return c.Status(404).JSON(errResponse("service not found: " + name))
+		return c.JSON(http.StatusNotFound, errResponse("service not found: "+name))
 	}
 
-	// ponytail: 原有17行冗余逻辑，switch已赋值，内层if重复赋相同值
 	logPath := svc.STDOUT
 	if logType == "stderr" {
 		logPath = svc.STDERR
@@ -131,26 +110,28 @@ func (s *Server) handleGetLogs(c fiber.Ctx) error {
 	}
 
 	if err != nil {
-		return c.JSON(errResponse(err.Error()))
+		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
 
-	return c.JSON(okResponse(map[string]any{
+	return c.JSON(http.StatusOK, okResponse(map[string]any{
 		"lines":   logLines,
 		"logPath": logPath,
 	}))
 }
 
-func (s *Server) handleClearLogs(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
-	logType := c.Query("type", "stdout")
+func (s *Server) handleClearLogs(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
+	logType := c.QueryParam("type")
+	if logType == "" {
+		logType = "stdout"
+	}
 
 	cfg := s.supervisor.GetConfig()
 	svc, exists := cfg.Services[name]
 	if !exists {
-		return c.Status(404).JSON(errResponse("service not found: " + name))
+		return c.JSON(http.StatusNotFound, errResponse("service not found: "+name))
 	}
 
-	// ponytail: 同handleGetLogs，缩减冗余
 	logPath := svc.STDOUT
 	if logType == "stderr" {
 		logPath = svc.STDERR
@@ -161,66 +142,66 @@ func (s *Server) handleClearLogs(c fiber.Ctx) error {
 
 	logMgr := s.supervisor.GetLogManager()
 	if err := logMgr.ClearFile(logPath); err != nil {
-		return c.JSON(errResponse("clear failed: " + err.Error()))
+		return c.JSON(http.StatusOK, errResponse("clear failed: "+err.Error()))
 	}
 
-	return c.JSON(okResponse(map[string]string{"message": "logs cleared"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "logs cleared"}))
 }
 
-func (s *Server) handleGetConfig(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
+func (s *Server) handleGetConfig(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
 	cfg := s.supervisor.GetConfig()
 
 	svc, exists := cfg.Services[name]
 	if !exists {
-		return c.Status(404).JSON(errResponse("service not found: " + name))
+		return c.JSON(http.StatusNotFound, errResponse("service not found: "+name))
 	}
 
-	return c.JSON(okResponse(svc))
+	return c.JSON(http.StatusOK, okResponse(svc))
 }
 
-func (s *Server) handleUpdateConfig(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
-	slog.Debug("update config", "service", name, "body_len", len(c.Body()))
+func (s *Server) handleUpdateConfig(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
+	slog.Debug("update config", "service", name, "body_len", c.Request().ContentLength)
 
 	cfg := s.supervisor.GetConfig()
 	if _, exists := cfg.Services[name]; !exists {
-		return c.Status(404).JSON(errResponse("service not found: " + name))
+		return c.JSON(http.StatusNotFound, errResponse("service not found: "+name))
 	}
 
 	var svc config.ServiceConfig
-	if err := c.Bind().Body(&svc); err != nil {
-		return c.Status(400).JSON(errResponse("invalid request body: " + err.Error()))
+	if err := c.Bind(&svc); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request body: "+err.Error()))
 	}
 
 	slog.Debug("update config parsed", "service", name, "exec_cmd", svc.EXEC_CMD, "work_dir", svc.WORK_DIR)
 
 	if svc.EXEC_CMD == "" {
-		return c.Status(400).JSON(errResponse("EXEC_CMD is required"))
+		return c.JSON(http.StatusBadRequest, errResponse("EXEC_CMD is required"))
 	}
 
 	if !config.IsValidRestartPolicy(svc.RESTART_POLICY) {
-		return c.Status(400).JSON(errResponse("invalid RESTART_POLICY: " + svc.RESTART_POLICY))
+		return c.JSON(http.StatusBadRequest, errResponse("invalid RESTART_POLICY: "+svc.RESTART_POLICY))
 	}
 
 	if svc.BACK_OFF < 0 {
-		return c.Status(400).JSON(errResponse("BACK_OFF must be non-negative"))
+		return c.JSON(http.StatusBadRequest, errResponse("BACK_OFF must be non-negative"))
 	}
 
 	for _, dep := range svc.DEPENDS_ON {
 		if _, exists := cfg.Services[dep]; !exists {
-			return c.Status(400).JSON(errResponse("unknown dependency: " + dep))
+			return c.JSON(http.StatusBadRequest, errResponse("unknown dependency: "+dep))
 		}
 	}
 
 	if err := s.supervisor.UpdateServiceConfig(name, svc); err != nil {
-		return c.JSON(errResponse(err.Error()))
+		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
 
-	return c.JSON(okResponse(map[string]string{"message": "config updated"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "config updated"}))
 }
 
-func (s *Server) handleSaveConfigToFile(c fiber.Ctx) error {
+func (s *Server) handleSaveConfigToFile(c echo.Context) error {
 	cfg := s.supervisor.GetConfig()
 	names := make([]string, 0, len(cfg.Services))
 	for n := range cfg.Services {
@@ -228,16 +209,16 @@ func (s *Server) handleSaveConfigToFile(c fiber.Ctx) error {
 	}
 	slog.Debug("save config to file", "services", names)
 	if err := s.supervisor.SaveConfig(); err != nil {
-		return c.JSON(errResponse("save failed: " + err.Error()))
+		return c.JSON(http.StatusOK, errResponse("save failed: "+err.Error()))
 	}
-	return c.JSON(okResponse(map[string]string{"message": "config saved to file"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "config saved to file"}))
 }
 
-func (s *Server) handleGetCronHistory(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
+func (s *Server) handleGetCronHistory(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
 	sched := s.supervisor.GetCronScheduler()
 	history := sched.GetHistory(name)
-	return c.JSON(okResponse(history))
+	return c.JSON(http.StatusOK, okResponse(history))
 }
 
 type createServiceRequest struct {
@@ -245,62 +226,65 @@ type createServiceRequest struct {
 	Svc  config.ServiceConfig `json:"svc"`
 }
 
-func (s *Server) handleCreateService(c fiber.Ctx) error {
+func (s *Server) handleCreateService(c echo.Context) error {
 	var req createServiceRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return c.Status(400).JSON(errResponse("invalid request body: " + err.Error()))
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request body: "+err.Error()))
 	}
 
 	if req.Name == "" {
-		return c.Status(400).JSON(errResponse("service name is required"))
+		return c.JSON(http.StatusBadRequest, errResponse("service name is required"))
 	}
 	if req.Svc.EXEC_CMD == "" {
-		return c.Status(400).JSON(errResponse("EXEC_CMD is required"))
+		return c.JSON(http.StatusBadRequest, errResponse("EXEC_CMD is required"))
 	}
 
 	if err := s.supervisor.CreateService(req.Name, req.Svc); err != nil {
-		return c.JSON(errResponse(err.Error()))
+		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
 
 	if err := s.supervisor.SaveConfig(); err != nil {
-		return c.JSON(errResponse("service created but save failed: " + err.Error()))
+		return c.JSON(http.StatusOK, errResponse("service created but save failed: "+err.Error()))
 	}
 
-	return c.JSON(okResponse(map[string]string{"message": "service " + req.Name + " created"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + req.Name + " created"}))
 }
 
-func (s *Server) handleDeleteService(c fiber.Ctx) error {
-	name := strings.Clone(c.Params("name"))
+func (s *Server) handleDeleteService(c echo.Context) error {
+	name := strings.Clone(c.Param("name"))
 
 	if err := s.supervisor.DeleteService(name); err != nil {
-		return c.JSON(errResponse(err.Error()))
+		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
 
 	if err := s.supervisor.SaveConfig(); err != nil {
-		return c.JSON(errResponse("service deleted but save failed: " + err.Error()))
+		return c.JSON(http.StatusOK, errResponse("service deleted but save failed: "+err.Error()))
 	}
 
-	return c.JSON(okResponse(map[string]string{"message": "service " + name + " deleted"}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + name + " deleted"}))
 }
 
 type validateCronRequest struct {
 	Expression string `json:"expression"`
 }
 
-func (s *Server) handleValidateCron(c fiber.Ctx) error {
+func (s *Server) handleValidateCron(c echo.Context) error {
 	var req validateCronRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return c.Status(400).JSON(errResponse("invalid request body: " + err.Error()))
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request body: "+err.Error()))
 	}
 
 	if req.Expression == "" {
-		return c.JSON(errResponse("expression is required"))
+		return c.JSON(http.StatusOK, okResponse(map[string]any{
+			"valid":   false,
+			"message": "expression is required",
+		}))
 	}
 
 	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 	sched, err := parser.Parse(req.Expression)
 	if err != nil {
-		return c.JSON(okResponse(map[string]any{
+		return c.JSON(http.StatusOK, okResponse(map[string]any{
 			"valid":   false,
 			"message": err.Error(),
 		}))
@@ -310,7 +294,7 @@ func (s *Server) handleValidateCron(c fiber.Ctx) error {
 	next := sched.Next(now)
 	next2 := sched.Next(next)
 
-	return c.JSON(okResponse(map[string]any{
+	return c.JSON(http.StatusOK, okResponse(map[string]any{
 		"valid":    true,
 		"message":  "valid cron expression",
 		"nextRun":  next.Format(time.RFC3339),

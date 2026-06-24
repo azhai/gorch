@@ -6,73 +6,83 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/azhai/gorch/internal/config"
-	"github.com/gofiber/fiber/v3"
+	"github.com/labstack/echo/v4"
 )
 
-func authMiddleware(cfg config.WebConfig) fiber.Handler {
+func authMiddleware(cfg config.WebConfig) echo.MiddlewareFunc {
 	if !cfg.WEB_AUTH {
-		return func(c fiber.Ctx) error {
-			return c.Next()
+		return func(next echo.HandlerFunc) echo.HandlerFunc {
+			return func(c echo.Context) error {
+				return next(c)
+			}
 		}
 	}
 
 	secret := []byte(cfg.WEB_PASS)
 
-	return func(c fiber.Ctx) error {
-		if strings.HasPrefix(c.Path(), "/api/auth") {
-			return c.Next()
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			path := c.Path()
+
+			if strings.HasPrefix(path, "/api/auth") {
+				return next(c)
+			}
+
+			if !strings.HasPrefix(path, "/api/") {
+				return next(c)
+			}
+
+			token := ""
+
+			// SSE uses query param for token since EventSource API doesn't support headers
+			if strings.HasPrefix(path, "/api/events") {
+				token = c.QueryParam("token")
+			} else {
+				authHeader := c.Request().Header.Get("Authorization")
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+
+			if token == "" {
+				return echo.NewHTTPError(http.StatusUnauthorized, "authentication required")
+			}
+
+			if !validateToken(token, secret) {
+				return echo.NewHTTPError(http.StatusUnauthorized, "invalid or expired token")
+			}
+
+			return next(c)
 		}
-
-		if !strings.HasPrefix(c.Path(), "/api/") {
-			return c.Next()
-		}
-
-		token := ""
-
-		// SSE uses query param for token since EventSource API doesn't support headers
-		if strings.HasPrefix(c.Path(), "/api/events") {
-			token = c.Query("token")
-		} else {
-			authHeader := c.Get("Authorization")
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		}
-
-		if token == "" {
-			return c.Status(401).JSON(errResponse("authentication required"))
-		}
-
-		if !validateToken(token, secret) {
-			return c.Status(401).JSON(errResponse("invalid or expired token"))
-		}
-
-		return c.Next()
 	}
 }
 
-func handleLogin(c fiber.Ctx, cfg config.WebConfig) error {
+func (s *Server) handleLogin(c echo.Context) error {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 
-	if err := c.Bind().Body(&body); err != nil {
-		return c.Status(400).JSON(errResponse("invalid request body"))
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request body"))
 	}
 
+	cfg := s.supervisor.GetConfig().Web
+
 	if body.Username != cfg.WEB_USER || body.Password != cfg.WEB_PASS {
-		return c.Status(401).JSON(errResponse("invalid credentials"))
+		return c.JSON(http.StatusUnauthorized, errResponse("invalid credentials"))
 	}
 
 	token, err := generateToken(body.Username, []byte(cfg.WEB_PASS))
 	if err != nil {
-		return c.Status(500).JSON(errResponse("failed to generate token"))
+		return c.JSON(http.StatusInternalServerError, errResponse("failed to generate token"))
 	}
 
-	return c.JSON(okResponse(map[string]string{"token": token}))
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"token": token}))
 }
 
 func generateToken(username string, secret []byte) (string, error) {
@@ -117,4 +127,31 @@ func validateToken(token string, secret []byte) bool {
 	}
 
 	return time.Now().Unix() < claims.Exp
+}
+
+// Custom HTTP error handler to return JSON instead of HTML
+func customHTTPErrorHandler(err error, c echo.Context) {
+	code := http.StatusInternalServerError
+	msg := "internal server error"
+
+	if he, ok := err.(*echo.HTTPError); ok {
+		code = he.Code
+		if m, ok := he.Message.(string); ok {
+			msg = m
+		} else if s, ok := he.Message.(fmt.Stringer); ok {
+			msg = s.String()
+		}
+	}
+
+	slog.Warn("http error", "code", code, "msg", msg, "path", c.Path())
+
+	// Try to return JSON error
+	if c.Request().Header.Get("Accept") == "application/json" ||
+		strings.HasPrefix(c.Path(), "/api/") {
+		c.JSON(code, errResponse(msg))
+		return
+	}
+
+	// Fallback to default HTML error
+	c.JSON(code, errResponse(msg))
 }

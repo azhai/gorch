@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/azhai/gorch/internal/status"
-	"github.com/gofiber/fiber/v3"
+	"github.com/labstack/echo/v4"
 )
 
 type SSEMessage struct {
@@ -146,12 +147,15 @@ func (h *Hub) BroadcastUptimeTick(allStatus map[string]status.ServiceStatus) {
 	}
 }
 
-func (s *Server) handleSSE(c fiber.Ctx) error {
-	c.Set("Content-Type", "text/event-stream")
-	c.Set("Cache-Control", "no-cache")
-	c.Set("Connection", "keep-alive")
-	c.Set("X-Accel-Buffering", "no")
+func (s *Server) handleSSE(c echo.Context) error {
+	// Set SSE headers
+	c.Response().Header().Set("Content-Type", "text/event-stream")
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().Header().Set("X-Accel-Buffering", "no")
 
+	// Enable streaming
+	c.Response().WriteHeader(http.StatusOK)
 	client := newSSEClient()
 	hub := s.supervisor.GetHub()
 	hub.register <- client
@@ -160,10 +164,11 @@ func (s *Server) handleSSE(c fiber.Ctx) error {
 		hub.unregister <- client
 	}()
 
-	// send initial connection event
-	c.Write(fmt.Appendf(nil, "event: connected\ndata: {}\n\n"))
+	// Send initial connection event
+	fmt.Fprintf(c.Response(), "event: connected\ndata: {}\n\n")
+	c.Response().Flush()
 
-	ctx := c.Context()
+	ctx := c.Request().Context()
 
 	for {
 		select {
@@ -174,9 +179,8 @@ func (s *Server) handleSSE(c fiber.Ctx) error {
 				return nil
 			}
 			data, _ := json.Marshal(msg)
-			if _, err := c.Write(fmt.Appendf(nil, "event: %s\ndata: %s\n\n", msg.Type, data)); err != nil {
-				return nil
-			}
+			fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", msg.Type, data)
+			c.Response().Flush()
 		}
 	}
 }

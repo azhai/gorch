@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gofiber/fiber/v3"
+	"github.com/labstack/echo/v4"
 )
 
 // ── Options.validate ──────────────────────────────────────
@@ -136,23 +136,21 @@ func TestFormatSize(t *testing.T) {
 
 // ── HTTP handler integration tests ───────────────────────
 
-func setupTestApp(dir string) (*fiber.App, *Server) {
+func setupTestServer(dir string) *echo.Echo {
 	opts := &Options{
 		Port: 0,
 		Dir:  dir,
 		Bind: "127.0.0.1",
 	}
 	srv := NewServer(opts)
-	return srv.app, srv
+	return srv.app
 }
 
-func doRequest(app *fiber.App, method, target string) *http.Response {
+func doRequest(e *echo.Echo, method, target string) *http.Response {
 	req := httptest.NewRequest(method, target, nil)
-	resp, err := app.Test(req)
-	if err != nil {
-		panic(err)
-	}
-	return resp
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	return rec.Result()
 }
 
 func readBody(resp *http.Response) string {
@@ -166,9 +164,9 @@ func TestHandler_ServeFile(t *testing.T) {
 	content := []byte("<html><body>hello</body></html>")
 	os.WriteFile(filepath.Join(tmpDir, "index.html"), content, 0644)
 
-	app, _ := setupTestApp(tmpDir)
+	app := setupTestServer(tmpDir)
 
-	resp := doRequest(app, fiber.MethodGet, "/index.html")
+	resp := doRequest(app, http.MethodGet, "/index.html")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -186,9 +184,9 @@ func TestHandler_ServeFile(t *testing.T) {
 
 func TestHandler_ServeFile_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
-	app, _ := setupTestApp(tmpDir)
+	app := setupTestServer(tmpDir)
 
-	resp := doRequest(app, fiber.MethodGet, "/missing.txt")
+	resp := doRequest(app, http.MethodGet, "/missing.txt")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
@@ -199,9 +197,9 @@ func TestHandler_ServeDirectoryListing(t *testing.T) {
 	os.MkdirAll(filepath.Join(tmpDir, "subdir"), 0755)
 	os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("data"), 0644)
 
-	app, _ := setupTestApp(tmpDir)
+	app := setupTestServer(tmpDir)
 
-	resp := doRequest(app, fiber.MethodGet, "/")
+	resp := doRequest(app, http.MethodGet, "/")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, readBody(resp))
 	}
@@ -225,9 +223,9 @@ func TestHandler_ServeDirectoryWithIndexHtml(t *testing.T) {
 	indexContent := []byte("<html>index page</html>")
 	os.WriteFile(filepath.Join(tmpDir, "index.html"), indexContent, 0644)
 
-	app, _ := setupTestApp(tmpDir)
+	app := setupTestServer(tmpDir)
 
-	resp := doRequest(app, fiber.MethodGet, "/")
+	resp := doRequest(app, http.MethodGet, "/")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -246,10 +244,10 @@ func TestHandler_PathTraversalBlocked(t *testing.T) {
 	secretFile := filepath.Join(parentDir, "secret_file.txt")
 	os.WriteFile(secretFile, secretContent, 0644)
 
-	app, _ := setupTestApp(tmpDir)
+	app := setupTestServer(tmpDir)
 
 	// Try to escape via .. in URL
-	resp := doRequest(app, fiber.MethodGet, "/../secret_file.txt")
+	resp := doRequest(app, http.MethodGet, "/../secret_file.txt")
 	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotFound {
 		t.Errorf("path traversal should be blocked, got status %d", resp.StatusCode)
 	}
@@ -257,9 +255,9 @@ func TestHandler_PathTraversalBlocked(t *testing.T) {
 
 func TestHandler_RootPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	app, _ := setupTestApp(tmpDir)
+	app := setupTestServer(tmpDir)
 
-	resp := doRequest(app, fiber.MethodGet, "/")
+	resp := doRequest(app, http.MethodGet, "/")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for root path, got %d", resp.StatusCode)
 	}
@@ -272,9 +270,9 @@ func TestHandler_NestedPath(t *testing.T) {
 	nestedContent := []byte("nested file")
 	os.WriteFile(filepath.Join(nestedDir, "deep.txt"), nestedContent, 0644)
 
-	app, _ := setupTestApp(tmpDir)
+	app := setupTestServer(tmpDir)
 
-	resp := doRequest(app, fiber.MethodGet, "/a/b/deep.txt")
+	resp := doRequest(app, http.MethodGet, "/a/b/deep.txt")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}

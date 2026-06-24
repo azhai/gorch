@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"html"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,31 +16,78 @@ import (
 	"time"
 
 	"github.com/azhai/gorch/internal/common"
-	"github.com/gofiber/fiber/v3"
+	"github.com/labstack/echo/v4"
 )
 
 type Server struct {
-	app     *fiber.App
+	app     *echo.Echo
 	rootDir string
 	addr    string
 }
 
 func NewServer(opts *Options) *Server {
-	s := &Server{
-		rootDir: opts.Dir,
-		addr:    fmt.Sprintf("%s:%d", opts.Bind, opts.Port),
-	}
+	rootDir := opts.Dir
 
-	app := fiber.New(fiber.Config{
-		AppName: "gorch-weblite",
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+
+	e.Use(accessLogMiddleware())
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			decoded, err := url.PathUnescape(c.Param("*"))
+			if err != nil {
+				return c.NoContent(http.StatusForbidden)
+			}
+
+			if strings.Contains(decoded, "..") {
+				return c.NoContent(http.StatusForbidden)
+			}
+
+			localPath := filepath.Join(rootDir, filepath.Clean(decoded))
+			if !isPathWithinRoot(rootDir, localPath) {
+				return c.NoContent(http.StatusForbidden)
+			}
+
+			return next(c)
+		}
 	})
 
-	app.Use(s.accessLogMiddleware())
-	app.Use(s.pathGuardMiddleware())
-	app.Get("/*", s.handleRequest)
+	e.GET("/*", func(c echo.Context) error {
+		relPath := c.Param("*")
+		if relPath == "" {
+			relPath = "."
+		}
 
-	s.app = app
-	return s
+		localPath := filepath.Join(rootDir, filepath.Clean(relPath))
+
+		info, err := os.Stat(localPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return c.NoContent(http.StatusNotFound)
+			}
+			if os.IsPermission(err) {
+				return c.NoContent(http.StatusForbidden)
+			}
+			return c.NoContent(http.StatusInternalServerError)
+		}
+
+		if info.IsDir() {
+			indexPath := filepath.Join(localPath, "index.html")
+			if _, err := os.Stat(indexPath); err == nil {
+				return serveFile(c, indexPath)
+			}
+			return serveDirectoryListing(c, localPath, relPath)
+		}
+
+		return serveFile(c, localPath)
+	})
+
+	return &Server{
+		app:     e,
+		rootDir: rootDir,
+		addr:    fmt.Sprintf("%s:%d", opts.Bind, opts.Port),
+	}
 }
 
 func (s *Server) Start() error {
@@ -55,12 +104,11 @@ func (s *Server) Start() error {
 		slog.Info("shutting down...")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		s.app.Shutdown()
-		<-shutdownCtx.Done()
+		s.app.Shutdown(shutdownCtx)
 		cancel()
 	})
 
-	if err := s.app.Listen(s.addr); err != nil {
+	if err := s.app.Start(s.addr); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 
@@ -70,38 +118,20 @@ func (s *Server) Start() error {
 
 // ── Middlewares ──────────────────────────────────────────
 
-func (s *Server) accessLogMiddleware() fiber.Handler {
-	return func(c fiber.Ctx) error {
-		start := time.Now()
-		err := c.Next()
-		slog.Info("request",
-			"time", start.Format("2006-01-02 15:04:05"),
-			"method", c.Method(),
-			"path", c.Path(),
-			"status", c.Response().StatusCode(),
-			"bytes", len(c.Response().Body()),
-		)
-		return err
-	}
-}
-
-func (s *Server) pathGuardMiddleware() fiber.Handler {
-	return func(c fiber.Ctx) error {
-		decoded, err := url.PathUnescape(c.Path())
-		if err != nil {
-			return c.SendStatus(403)
+func accessLogMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			start := time.Now()
+			err := next(c)
+			slog.Info("request",
+				"time", start.Format("2006-01-02 15:04:05"),
+				"method", c.Request().Method,
+				"path", c.Path(),
+				"status", c.Response().Status,
+				"bytes", c.Response().Size,
+			)
+			return err
 		}
-
-		if strings.Contains(decoded, "..") {
-			return c.SendStatus(403)
-		}
-
-		localPath := filepath.Join(s.rootDir, filepath.Clean(decoded))
-		if !isPathWithinRoot(s.rootDir, localPath) {
-			return c.SendStatus(403)
-		}
-
-		return c.Next()
 	}
 }
 
@@ -139,56 +169,26 @@ func isPathWithinRoot(root, target string) bool {
 	return strings.HasPrefix(evalTarget, evalRoot+string(os.PathSeparator)) || evalTarget == evalRoot
 }
 
-// ── Request handlers ─────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────
 
-func (s *Server) handleRequest(c fiber.Ctx) error {
-	relPath := c.Params("*")
-	if relPath == "" {
-		relPath = "."
-	}
-
-	localPath := filepath.Join(s.rootDir, filepath.Clean(relPath))
-
-	info, err := os.Stat(localPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return c.Status(404).SendString("Not Found")
-		}
-		if os.IsPermission(err) {
-			return c.Status(403).SendString("Forbidden")
-		}
-		return c.Status(500).SendString("Internal Server Error")
-	}
-
-	if info.IsDir() {
-		indexPath := filepath.Join(localPath, "index.html")
-		if _, err := os.Stat(indexPath); err == nil {
-			return s.serveFile(c, indexPath)
-		}
-		return s.serveDirectoryListing(c, localPath, relPath)
-	}
-
-	return s.serveFile(c, localPath)
-}
-
-func (s *Server) serveFile(c fiber.Ctx, path string) error {
+func serveFile(c echo.Context, path string) error {
 	ext := filepath.Ext(path)
 	if ext != "" {
-		c.Type(strings.TrimPrefix(ext, "."))
+		c.Response().Header().Set("Content-Type", mimeTypeForExt(ext))
 	}
 
 	stat, err := os.Stat(path)
 	if err == nil {
-		c.Set("Content-Length", fmt.Sprintf("%d", stat.Size()))
+		c.Response().Header().Set("Content-Length", fmt.Sprintf("%d", stat.Size()))
 	}
 
-	return c.SendFile(path)
+	return c.File(path)
 }
 
-func (s *Server) serveDirectoryListing(c fiber.Ctx, dirPath, relPath string) error {
+func serveDirectoryListing(c echo.Context, dirPath, relPath string) error {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
-		return c.Status(500).SendString("Internal Server Error")
+		return c.NoContent(http.StatusInternalServerError)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
@@ -198,7 +198,7 @@ func (s *Server) serveDirectoryListing(c fiber.Ctx, dirPath, relPath string) err
 		return entries[i].Name() < entries[j].Name()
 	})
 
-	var sb strings.Builder
+	var sb bytes.Buffer
 	sb.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
 	sb.WriteString("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
 	sb.WriteString(fmt.Sprintf("<title>Index of %s</title>", html.EscapeString("/"+relPath)))
@@ -232,8 +232,8 @@ func (s *Server) serveDirectoryListing(c fiber.Ctx, dirPath, relPath string) err
 
 	sb.WriteString("</tbody></table></body></html>")
 
-	c.Set("Content-Type", "text/html; charset=utf-8")
-	return c.SendString(sb.String())
+	c.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
+	return c.Blob(http.StatusOK, "text/html; charset=utf-8", []byte(sb.String()))
 }
 
 func formatSize(b int64) string {
@@ -242,6 +242,7 @@ func formatSize(b int64) string {
 		MB = KB * 1024
 		GB = MB * 1024
 	)
+
 	switch {
 	case b >= GB:
 		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
@@ -251,5 +252,28 @@ func formatSize(b int64) string {
 		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
 	default:
 		return fmt.Sprintf("%d B", b)
+	}
+}
+
+func mimeTypeForExt(ext string) string {
+	switch ext {
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css"
+	case ".js":
+		return "application/javascript"
+	case ".json":
+		return "application/json"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".svg":
+		return "image/svg+xml"
+	case ".ico":
+		return "image/x-icon"
+	default:
+		return "application/octet-stream"
 	}
 }

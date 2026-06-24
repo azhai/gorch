@@ -7,7 +7,8 @@ import (
 	"github.com/azhai/gorch/internal/cron"
 	"github.com/azhai/gorch/internal/logs"
 	"github.com/azhai/gorch/internal/status"
-	"github.com/gofiber/fiber/v3"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 )
 
 type SupervisorProvider interface {
@@ -27,48 +28,65 @@ type SupervisorProvider interface {
 }
 
 type Server struct {
-	app        *fiber.App
+	app        *echo.Echo
 	supervisor SupervisorProvider
 	addr       string
 }
 
 func NewServer(addr string, sup SupervisorProvider) *Server {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+
+	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "OPTIONS", "DELETE"},
+		AllowHeaders:     []string{"Content-Type", "Authorization"},
+		AllowCredentials: false,
+	}))
+
+	e.Use(authMiddleware(sup.GetConfig().Web))
+
 	s := &Server{
-		addr:       addr,
+		app:        e,
 		supervisor: sup,
+		addr:       addr,
 	}
 
-	app := fiber.New(fiber.Config{
-		AppName:      "gorch",
-		ReadTimeout:  0, // 禁用读取超时以支持SSE长连接
-		WriteTimeout: 0, // 禁用写入超时
-	})
-
-	app.Use(corsMiddleware())
-	app.Use(authMiddleware(sup.GetConfig().Web))
-
-	s.app = app
 	s.setupRoutes()
-
 	return s
 }
 
 func (s *Server) Start() error {
-	return s.app.Listen(s.addr)
+	return s.app.Start(s.addr)
 }
 
 func (s *Server) Stop() {
-	s.app.Shutdown()
+	ctx := context.Background()
+	s.app.Shutdown(ctx)
 }
 
-func corsMiddleware() fiber.Handler {
-	return func(c fiber.Ctx) error {
-		c.Set("Access-Control-Allow-Origin", "*")
-		c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS")
-		c.Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
-		if c.Method() == "OPTIONS" {
-			return c.SendStatus(204)
-		}
-		return c.Next()
-	}
+func (s *Server) setupRoutes() {
+	api := s.app.Group("/api")
+
+	api.POST("/auth/login", s.handleLogin)
+	api.GET("/services", s.handleGetServices)
+	api.POST("/services", s.handleCreateService)
+	api.GET("/services/:name", s.handleGetService)
+	api.POST("/services/:name/start", s.handleStartService)
+	api.POST("/services/:name/stop", s.handleStopService)
+	api.POST("/services/:name/restart", s.handleRestartService)
+	api.GET("/services/:name/logs", s.handleGetLogs)
+	api.POST("/services/:name/logs/clear", s.handleClearLogs)
+	api.GET("/services/:name/config", s.handleGetConfig)
+	api.PUT("/services/:name/config", s.handleUpdateConfig)
+	api.POST("/save-config", s.handleSaveConfigToFile)
+	api.DELETE("/services/:name", s.handleDeleteService)
+	api.GET("/cron/:name/history", s.handleGetCronHistory)
+	api.POST("/cron/validate", s.handleValidateCron)
+
+	api.GET("/events", s.handleSSE)
+
+	s.app.GET("/assets/*", staticAssetHandler)
+	s.app.GET("/*", spaFallbackHandler)
 }
