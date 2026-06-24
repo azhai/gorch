@@ -19,13 +19,17 @@ export interface LogResponse {
 export interface ServiceConfig {
   WORK_DIR: string
   EXEC_CMD: string
+  RESTART_CMD: string
   RESTART_POLICY: string
   BACK_OFF: number
+  CHECK_PORT: number
+  PRE_ACTION: string
   STDOUT: string
   STDERR: string
   DEPENDS_ON: string[]
   CRON: string
   ENV_VARS: Record<string, string>
+  PID_FILE: string
 }
 
 export interface APIResponse<T> {

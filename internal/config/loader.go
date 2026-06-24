@@ -80,6 +80,9 @@ func cleanServiceConfig(svc ServiceConfig, configDir string) map[string]any {
 	if svc.EXEC_CMD != "" {
 		clean["EXEC_CMD"] = svc.EXEC_CMD
 	}
+	if svc.RESTART_CMD != "" {
+		clean["RESTART_CMD"] = svc.RESTART_CMD
+	}
 	if svc.WORK_DIR != "" && svc.WORK_DIR != "." && svc.WORK_DIR != configDir {
 		clean["WORK_DIR"] = svc.WORK_DIR
 	}
@@ -88,6 +91,12 @@ func cleanServiceConfig(svc ServiceConfig, configDir string) map[string]any {
 	}
 	if svc.BACK_OFF > 0 {
 		clean["BACK_OFF"] = svc.BACK_OFF
+	}
+	if svc.CHECK_PORT > 0 {
+		clean["CHECK_PORT"] = svc.CHECK_PORT
+	}
+	if svc.PRE_ACTION != "" {
+		clean["PRE_ACTION"] = svc.PRE_ACTION
 	}
 	if svc.STDOUT != "" {
 		clean["STDOUT"] = svc.STDOUT
@@ -100,6 +109,9 @@ func cleanServiceConfig(svc ServiceConfig, configDir string) map[string]any {
 	}
 	if svc.CRON != "" {
 		clean["CRON"] = svc.CRON
+	}
+	if svc.PID_FILE != "" {
+		clean["PID_FILE"] = svc.PID_FILE
 	}
 	if len(svc.ENV_VARS) > 0 {
 		clean["ENV_VARS"] = svc.ENV_VARS
@@ -210,6 +222,13 @@ func validateAndFillDefaults(cfg *Config, configDir string) error {
 		cfg.Web.WEB_ADDR = "127.0.0.1:8080"
 	}
 
+	if cfg.PID_FILE == "" {
+		cfg.PID_FILE = "/var/run/gorch.pid"
+	}
+	if cfg.SERVICES_LOCK == "" {
+		cfg.SERVICES_LOCK = "/var/run/gorch-services.lock"
+	}
+
 	return nil
 }
 
@@ -224,8 +243,8 @@ func IsValidRestartPolicy(p string) bool {
 func expandEnvInConfig(cfg *Config) error {
 	for name, svc := range cfg.Services {
 		var err error
-		fields := []*string{&svc.EXEC_CMD, &svc.WORK_DIR, &svc.STDOUT, &svc.STDERR}
-		names := []string{"EXEC_CMD", "WORK_DIR", "STDOUT", "STDERR"}
+		fields := []*string{&svc.EXEC_CMD, &svc.WORK_DIR, &svc.STDOUT, &svc.STDERR, &svc.PID_FILE}
+		names := []string{"EXEC_CMD", "WORK_DIR", "STDOUT", "STDERR", "PID_FILE"}
 		for i, p := range fields {
 			if *p, err = expandEnv(*p); err != nil {
 				return fmt.Errorf("service '%s' %s: %w", name, names[i], err)

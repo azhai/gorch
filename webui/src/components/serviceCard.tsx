@@ -69,8 +69,10 @@ export function ServiceCard({ service, onAction, showToast }: ServiceCardProps) 
           <span className="text-gray-700">{formatUptime(service.uptime)}</span>
         </div>
         <div>
-          <span className="block text-gray-400">Memory</span>
-          <span className="text-gray-700">{service.memoryMB ? `${service.memoryMB} MB` : '-'}</span>
+          <span className="block text-gray-400">Memory (RSS)</span>
+          <span className="text-gray-700">
+            {service.memoryMB ? `${service.memoryMB} MB` : '-'}
+          </span>
         </div>
       </div>
 

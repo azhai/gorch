@@ -92,6 +92,8 @@ EXEC_CMD = "python manage.py runserver 0.0.0.0:8000"
 WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
+CHECK_PORT = 8000
+PRE_ACTION = "ps -efww | grep -F python | grep -v grep | cut -w -f3 | xargs kill -9"
 STDOUT = "/var/log/api.stdout.log"
 STDERR = "/var/log/api.stderr.log"
 DEPENDS_ON = ["postgres"]
@@ -107,6 +109,7 @@ STDOUT = "/var/log/postgres.log"
 [services.nginx]
 EXEC_CMD = "nginx -g 'daemon off;'"
 RESTART_POLICY = "always"
+PRE_ACTION = "ps -efww | grep -F nginx | grep -v grep | cut -w -f3 | xargs kill -9"
 DEPENDS_ON = ["api"]
 ```
 
@@ -115,14 +118,57 @@ DEPENDS_ON = ["api"]
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `EXEC_CMD` | Yes | — | Command to execute |
+| `RESTART_CMD` | No | — | Shell command for graceful reload instead of stop+start (e.g. `nginx -s reload`) |
 | `WORK_DIR` | No | Config file directory | Working directory for the process |
 | `RESTART_POLICY` | No | `never` | `always` / `on-failure` / `never` |
-| `BACK_OFF` | No | `0` | Seconds to wait before restart attempt |
+| `BACK_OFF` | No | `0` (auto-restart uses `2`) | Seconds to wait before restart attempt |
+| `PRE_ACTION` | No | — | Shell command run via `sh -c` before start (e.g. kill stale processes by name) |
+| `CHECK_PORT` | No | `0` | If set, kill any process occupying this port before start |
 | `STDOUT` | No | `LOG_DIR/<name>.out.log` | Stdout log file path |
 | `STDERR` | No | `LOG_DIR/<name>.err.log` | Stderr log file path |
 | `DEPENDS_ON` | No | `[]` | Services that must start first (topological order) |
 | `CRON` | No | — | 6-field cron expression (with seconds) for scheduled runs |
 | `ENV_VARS` | No | `{}` | Environment variables passed to the process |
+
+#### Startup Sequence
+
+When a service starts (or restarts), gorch runs the following steps in order:
+
+1. **PRE_ACTION** — if set, executed via `sh -c` in `WORK_DIR`. Failures are logged but do not block startup.
+2. **CHECK_PORT** — if `> 0`, kills any process listening on that port (`lsof` + `SIGKILL`).
+3. **StartProcess** — launches `EXEC_CMD`.
+
+This is useful for multi-process daemons like Nginx, where a stale master/worker may linger and block the new instance:
+
+```toml
+[services.nginx]
+EXEC_CMD = "nginx -g 'daemon off;'"
+PRE_ACTION = "ps -efww | grep -F nginx | grep -v grep | cut -w -f3 | xargs kill -9"
+CHECK_PORT = 80
+```
+
+#### Graceful Reload via RESTART_CMD
+
+For daemons that support a reload signal (e.g. `nginx -s reload`, `angie -s reload`),
+set `RESTART_CMD` so that `gorch restart <name>` triggers a graceful reload
+instead of killing and restarting the process:
+
+```toml
+[services.angie]
+EXEC_CMD = "angie"
+RESTART_CMD = "angie -s reload"
+RESTART_POLICY = "always"
+```
+
+When `RESTART_CMD` is set, `RestartService` runs it via `sh -c` in `WORK_DIR`
+and skips the stop+start cycle. This avoids PID churn for daemonized processes.
+
+#### Daemonized Process Tracking
+
+Daemons like Nginx/Angie fork a master process and exit the original PID.
+The master is then reparented to init (PPID=1). gorch locates the real master
+by matching the executable name and preferring the process with PPID=1,
+falling back to the smallest matching PID (master starts first).
 
 ### Web UI Fields
 
@@ -148,6 +194,19 @@ Use `${VAR}` syntax in string fields — they will be expanded from the environm
 [services.app]
 EXEC_CMD = "/app/bin/start --port ${PORT}"
 WORK_DIR = "${HOME}/projects/app"
+```
+
+### Runtime Mode
+
+Set `GORCH_MODE` to control log verbosity:
+
+| Value | Log Level | Use Case |
+|-------|-----------|----------|
+| `dev` | `debug` | Troubleshooting — shows process state/etime/rss/cmd per tick |
+| `prod` (default) | `info` | Production |
+
+```sh
+GORCH_MODE=dev gorch start
 ```
 
 ### Cron Expressions

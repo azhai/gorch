@@ -91,6 +91,8 @@ EXEC_CMD = "python manage.py runserver 0.0.0.0:8000"
 WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
+CHECK_PORT = 8000
+PRE_ACTION = "ps -efww | grep -F python | grep -v grep | cut -w -f3 | xargs kill -9"
 STDOUT = "/var/log/api.stdout.log"
 STDERR = "/var/log/api.stderr.log"
 DEPENDS_ON = ["postgres"]
@@ -106,6 +108,7 @@ STDOUT = "/var/log/postgres.log"
 [services.nginx]
 EXEC_CMD = "nginx -g 'daemon off;'"
 RESTART_POLICY = "always"
+PRE_ACTION = "ps -efww | grep -F nginx | grep -v grep | cut -w -f3 | xargs kill -9"
 DEPENDS_ON = ["api"]
 ```
 
@@ -114,14 +117,56 @@ DEPENDS_ON = ["api"]
 | 字段 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
 | `EXEC_CMD` | 是 | — | 要执行的命令 |
+| `RESTART_CMD` | 否 | — | 优雅重载命令，替代 stop+start（如 `nginx -s reload`） |
 | `WORK_DIR` | 否 | 配置文件所在目录 | 进程工作目录 |
 | `RESTART_POLICY` | 否 | `never` | `always`（总是重启）/ `on-failure`（失败时重启）/ `never`（不重启） |
 | `BACK_OFF` | 否 | `0` | 重启前等待秒数 |
+| `PRE_ACTION` | 否 | — | 启动前通过 `sh -c` 执行的 Shell 命令（如按进程名清理残留进程） |
+| `CHECK_PORT` | 否 | `0` | 若设置，启动前杀掉占用该端口的进程 |
 | `STDOUT` | 否 | `LOG_DIR/<名称>.out.log` | 标准输出日志文件路径 |
 | `STDERR` | 否 | `LOG_DIR/<名称>.err.log` | 标准错误日志文件路径 |
 | `DEPENDS_ON` | 否 | `[]` | 依赖的服务列表（按拓扑排序启动） |
 | `CRON` | 否 | — | 6 位 cron 表达式（含秒），用于定时执行 |
 | `ENV_VARS` | 否 | `{}` | 传递给进程的环境变量 |
+
+#### 启动顺序
+
+服务启动（或重启）时，gorch 按以下顺序执行：
+
+1. **PRE_ACTION** — 若已设置，在 `WORK_DIR` 下通过 `sh -c` 执行。失败仅记录日志，不阻止启动。
+2. **CHECK_PORT** — 若 `> 0`，杀掉占用该端口的进程（`lsof` + `SIGKILL`）。
+3. **StartProcess** — 启动 `EXEC_CMD`。
+
+适用于 Nginx 这类多进程守护进程，残留的 master/worker 可能阻塞新实例启动：
+
+```toml
+[services.nginx]
+EXEC_CMD = "nginx -g 'daemon off;'"
+PRE_ACTION = "ps -efww | grep -F nginx | grep -v grep | cut -w -f3 | xargs kill -9"
+CHECK_PORT = 80
+```
+
+#### 通过 RESTART_CMD 优雅重载
+
+对于支持重载信号的守护进程（如 `nginx -s reload`、`angie -s reload`），
+设置 `RESTART_CMD` 后，`gorch restart <名称>` 会触发优雅重载，
+而非杀进程再启动：
+
+```toml
+[services.angie]
+EXEC_CMD = "angie"
+RESTART_CMD = "angie -s reload"
+RESTART_POLICY = "always"
+```
+
+设置 `RESTART_CMD` 后，`RestartService` 在 `WORK_DIR` 下通过 `sh -c` 执行该命令，
+跳过 stop+start 流程。这避免了守护进程的 PID 抖动。
+
+#### 守护进程跟踪
+
+Nginx/Angie 等守护进程会 fork 出 master 进程并退出原始 PID，
+master 随后被 init 接管（PPID=1）。gorch 通过匹配可执行文件名定位真正的 master，
+优先选择 PPID=1 的进程，回退到最小 PID（master 启动最早）。
 
 ### Web 界面配置
 

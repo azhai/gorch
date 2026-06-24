@@ -18,6 +18,15 @@ import (
 // ServicePidDir is where per-service PID files are stored.
 const ServicePidDir = "/tmp/gorch"
 
+// psInfo holds process info from a single ps call.
+type psInfo struct {
+	ppid    int
+	state   string
+	rssMB   int64
+	etime   string
+	command string
+}
+
 type ProcessInfo struct {
 	Name       string
 	Cmd        *exec.Cmd
@@ -29,6 +38,7 @@ type ProcessInfo struct {
 	StdoutFile *os.File
 	StderrFile *os.File
 	ManualStop bool
+	Adopted    bool // true if process was adopted from a previous run via PID file
 }
 
 func StartProcess(ctx context.Context, svc config.ServiceConfig, name string) (*ProcessInfo, error) {
@@ -99,43 +109,73 @@ func StartProcess(ctx context.Context, svc config.ServiceConfig, name string) (*
 	return proc, nil
 }
 
+// AdoptProcess creates a ProcessInfo for an already-running process identified by PID.
+// It checks whether the process is alive. Returns nil if the process does not exist.
+func AdoptProcess(name string, pid int) *ProcessInfo {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return nil
+	}
+	// signal 0 checks process existence without actually sending a signal
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		return nil
+	}
+	return &ProcessInfo{
+		Name:      name,
+		Pid:       pid,
+		Status:    config.StatusRunning,
+		StartTime: time.Now(),
+		Adopted:   true,
+	}
+}
+
 func StopProcess(proc *ProcessInfo, timeout time.Duration) error {
 	if proc.Cmd == nil || proc.Cmd.Process == nil {
+		// For adopted processes (no Cmd), signal directly via PID
+		if proc.Adopted && proc.Pid > 0 {
+			p, err := os.FindProcess(proc.Pid)
+			if err == nil {
+				p.Signal(syscall.SIGTERM)
+				// poll until exit or timeout
+				deadline := time.Now().Add(timeout)
+				for time.Now().Before(deadline) {
+					if p.Signal(syscall.Signal(0)) != nil {
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+				// force kill if still alive
+				if p.Signal(syscall.Signal(0)) == nil {
+					killProcessGroup(proc.Pid)
+				}
+			}
+		}
 		RemoveServicePidFile(proc.Name)
 		return nil
 	}
 
-	// Signal the process group
-	if err := proc.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		return fmt.Errorf("failed to send SIGTERM to service '%s': %w", proc.Name, err)
-	}
-
-	// Wait for process to exit by polling, not calling Wait()
-	// (Wait() is already called by MonitorProcess goroutine)
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if err := proc.Cmd.Process.Signal(syscall.Signal(0)); err != nil {
-			// Process no longer exists
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// Force kill if still running
-	if err := proc.Cmd.Process.Signal(syscall.Signal(0)); err == nil {
+	// SIGTERM the process group, then poll until exit or timeout
+	proc.Cmd.Process.Signal(syscall.SIGTERM)
+	if !waitExit(proc, timeout) {
 		killProcessGroup(proc.Cmd.Process.Pid)
-		// Wait a bit for it to die
-		for time.Now().Before(time.Now().Add(5 * time.Second)) {
-			if err := proc.Cmd.Process.Signal(syscall.Signal(0)); err != nil {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+		waitExit(proc, 5*time.Second)
 	}
 
 	proc.CloseFiles()
 	RemoveServicePidFile(proc.Name)
 	return nil
+}
+
+// waitExit polls the process until it exits or deadline elapses.
+func waitExit(proc *ProcessInfo, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if proc.Cmd.Process.Signal(syscall.Signal(0)) != nil {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 func MonitorProcess(proc *ProcessInfo) (<-chan int, error) {

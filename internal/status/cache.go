@@ -29,13 +29,28 @@ func (c *Cache) Update(name string, status ServiceStatus) {
 	c.statuses[name] = status
 }
 
-// UpdateMemory updates only the MemoryMB field for a service.
-func (c *Cache) UpdateMemory(name string, memoryMB int64) {
+// UpdateMemory updates the memory field for a service.
+func (c *Cache) UpdateMemory(name string, rssMB int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if st, ok := c.statuses[name]; ok {
-		st.MemoryMB = memoryMB
+		st.MemoryMB = rssMB
+		c.statuses[name] = st
+	}
+}
+
+// UpdateProcessInfo updates the PID and memory for a service whose process was re-discovered.
+func (c *Cache) UpdateProcessInfo(name string, pid int, rssMB int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if st, ok := c.statuses[name]; ok {
+		if st.Pid != pid {
+			st.Pid = pid
+			st.StartedAt = time.Now().Unix()
+		}
+		st.MemoryMB = rssMB
 		c.statuses[name] = st
 	}
 }

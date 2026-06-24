@@ -50,8 +50,10 @@ func TestSave_WithServices(t *testing.T) {
 	cfg := New()
 	cfg.Services["web"] = ServiceConfig{
 		EXEC_CMD:       "./bin/web",
+		RESTART_CMD:    "nginx -s reload",
 		RESTART_POLICY: string(RestartAlways),
 		BACK_OFF:       5,
+		CHECK_PORT:     8080,
 		WORK_DIR:       "/opt/app",
 		ENV_VARS: map[string]string{
 			"PORT": "8080",
@@ -75,11 +77,17 @@ func TestSave_WithServices(t *testing.T) {
 	if svc.EXEC_CMD != "./bin/web" {
 		t.Errorf("EXEC_CMD = %q, want ./bin/web", svc.EXEC_CMD)
 	}
+	if svc.RESTART_CMD != "nginx -s reload" {
+		t.Errorf("RESTART_CMD = %q, want 'nginx -s reload'", svc.RESTART_CMD)
+	}
 	if svc.RESTART_POLICY != "always" {
 		t.Errorf("RESTART_POLICY = %q, want always", svc.RESTART_POLICY)
 	}
 	if svc.BACK_OFF != 5 {
 		t.Errorf("BACK_OFF = %d, want 5", svc.BACK_OFF)
+	}
+	if svc.CHECK_PORT != 8080 {
+		t.Errorf("CHECK_PORT = %d, want 8080", svc.CHECK_PORT)
 	}
 	if svc.WORK_DIR != "/opt/app" {
 		t.Errorf("WORK_DIR = %q, want /opt/app", svc.WORK_DIR)

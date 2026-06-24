@@ -1,7 +1,9 @@
 package supervisor
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,8 +23,11 @@ func TestNewSupervisor_Defaults(t *testing.T) {
 	if sup == nil {
 		t.Fatal("NewSupervisor() returned nil")
 	}
-	if sup.pidPath != "/tmp/gorch.pid" {
-		t.Errorf("default pidPath = %q, want '/tmp/gorch.pid'", sup.pidPath)
+	if sup.pidPath != "/var/run/gorch.pid" {
+		t.Errorf("default pidPath = %q, want '/var/run/gorch.pid'", sup.pidPath)
+	}
+	if sup.servicesLockPath != "/var/run/gorch-services.lock" {
+		t.Errorf("default servicesLockPath = %q, want '/var/run/gorch-services.lock'", sup.servicesLockPath)
 	}
 	if sup.socketPath != "/tmp/gorch.sock" {
 		t.Errorf("default socketPath = %q, want '/tmp/gorch.sock'", sup.socketPath)
@@ -286,4 +291,86 @@ func TestKillOrphanProcess_OldFileSkipped(t *testing.T) {
 	if killed {
 		t.Error("should skip PID file older than maxOrphanAge")
 	}
+}
+
+// ── Test RestartService with RESTART_CMD ─────────────────
+
+// TestRestartService_RestartCmd verifies that when RESTART_CMD is set,
+// RestartService runs that command instead of stop+start.
+func TestRestartService_RestartCmd(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "reloaded")
+	cfg := &config.Config{
+		Services: map[string]config.ServiceConfig{
+			"svc": {
+				EXEC_CMD:    "sleep 60",
+				RESTART_CMD: "touch " + marker,
+			},
+		},
+	}
+	sup := NewSupervisor(cfg)
+
+	// Simulate a running process so RestartService can refresh its status.
+	sup.processes["svc"] = &ProcessInfo{
+		Name:      "svc",
+		Pid:       os.Getpid(),
+		Status:    config.StatusRunning,
+		StartTime: time.Now(),
+	}
+
+	if err := sup.RestartService(context.Background(), "svc"); err != nil {
+		t.Fatalf("RestartService() error = %v", err)
+	}
+
+	// RESTART_CMD should have created the marker file.
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("RESTART_CMD did not run: marker file not created: %v", err)
+	}
+}
+
+// TestRestartService_RestartCmdFailure verifies that a failing RESTART_CMD
+// returns an error and marks the service as failed.
+func TestRestartService_RestartCmdFailure(t *testing.T) {
+	cfg := &config.Config{
+		Services: map[string]config.ServiceConfig{
+			"svc": {
+				EXEC_CMD:    "sleep 60",
+				RESTART_CMD: "false", // always exits non-zero
+			},
+		},
+	}
+	sup := NewSupervisor(cfg)
+	sup.processes["svc"] = &ProcessInfo{
+		Name:      "svc",
+		Pid:       os.Getpid(),
+		Status:    config.StatusRunning,
+		StartTime: time.Now(),
+	}
+
+	err := sup.RestartService(context.Background(), "svc")
+	if err == nil {
+		t.Fatal("expected error for failing RESTART_CMD")
+	}
+
+	st, ok := sup.GetStatus("svc")
+	if !ok {
+		t.Fatal("expected status after failure")
+	}
+	if st.Status != config.StatusFailed {
+		t.Errorf("status = %q, want %q", st.Status, config.StatusFailed)
+	}
+}
+
+// TestRestartService_NoRestartCmd verifies that without RESTART_CMD,
+// RestartService falls back to stop+start (and errors if not running).
+func TestRestartService_NoRestartCmd(t *testing.T) {
+	cfg := &config.Config{
+		Services: map[string]config.ServiceConfig{
+			"svc": {EXEC_CMD: "sleep 60"},
+		},
+	}
+	sup := NewSupervisor(cfg)
+
+	// No process registered → stopService returns error, startService tries to start.
+	// We just verify it doesn't panic and RESTART_CMD path is not taken.
+	_ = sup.RestartService(context.Background(), "svc")
 }

@@ -59,13 +59,13 @@ export default function Dashboard() {
     }
 
     if (lastMessage.type === 'uptime_tick') {
-      const payload = lastMessage.payload as { services: Record<string, { uptime: number; memoryMB: number }> }
+      const payload = lastMessage.payload as { services: Record<string, { pid: number; uptime: number; memoryMB: number }> }
       lastServerUptime.current = { ...Object.fromEntries(Object.entries(payload.services).map(([k, v]) => [k, v.uptime])) }
       setServices((prev) =>
         prev.map((s) => {
           const info = payload.services[s.name]
           if (info !== undefined) {
-            return { ...s, uptime: info.uptime, memoryMB: info.memoryMB }
+            return { ...s, pid: info.pid, uptime: info.uptime, memoryMB: info.memoryMB }
           }
           return s
         })

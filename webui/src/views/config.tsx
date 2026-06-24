@@ -195,13 +195,17 @@ export default function Config() {
             setConfig({
               WORK_DIR: '.',
               EXEC_CMD: '',
+              RESTART_CMD: '',
               RESTART_POLICY: 'never',
               BACK_OFF: 0,
+              CHECK_PORT: 0,
+              PRE_ACTION: '',
               STDOUT: '',
               STDERR: '',
               DEPENDS_ON: [],
               CRON: '',
               ENV_VARS: {},
+              PID_FILE: '',
             })
             setOriginalConfig(null)
             setIsCreating(true)
@@ -246,6 +250,39 @@ export default function Config() {
           </div>
 
           <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">RESTART_CMD <span className="text-gray-400">(Shell command for graceful reload, e.g. nginx -s reload)</span></label>
+            <input
+              type="text"
+              value={config.RESTART_CMD || ''}
+              onChange={(e) => updateField('RESTART_CMD', e.target.value)}
+              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              placeholder="e.g. nginx -s reload"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">PID_FILE <span className="text-gray-400">(Read PID from file instead of searching, e.g. /var/run/nginx.pid)</span></label>
+            <input
+              type="text"
+              value={config.PID_FILE || ''}
+              onChange={(e) => updateField('PID_FILE', e.target.value)}
+              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              placeholder="e.g. /var/run/nginx.pid"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">PRE_ACTION <span className="text-gray-400">(Shell command run before start)</span></label>
+            <input
+              type="text"
+              value={config.PRE_ACTION || ''}
+              onChange={(e) => updateField('PRE_ACTION', e.target.value)}
+              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              placeholder="e.g. pkill -f myservice"
+            />
+          </div>
+
+          <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">WORK_DIR <span className="text-gray-400">(Working Directory)</span></label>
             <input
               type="text"
@@ -255,7 +292,7 @@ export default function Config() {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">RESTART_POLICY <span className="text-gray-400">(Restart)</span></label>
               <select
@@ -267,6 +304,16 @@ export default function Config() {
                 <option value="on-failure">on-failure</option>
                 <option value="never">never</option>
               </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">CHECK_PORT <span className="text-gray-400">(0 = off)</span></label>
+              <input
+                type="number"
+                value={config.CHECK_PORT || 0}
+                onChange={(e) => updateField('CHECK_PORT', parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                placeholder="0"
+              />
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">BACK_OFF <span className="text-gray-400">(Seconds)</span></label>

@@ -31,6 +31,7 @@ type UptimeTickPayload struct {
 }
 
 type UptimeInfo struct {
+	Pid      int   `json:"pid"`
 	Uptime   int64 `json:"uptime"`
 	MemoryMB int64 `json:"memoryMB"`
 }
@@ -106,13 +107,13 @@ func (h *Hub) Stop() {
 	close(h.stopCh)
 }
 
-func (h *Hub) BroadcastStatusChange(name string, status string, pid int, uptime int64, memoryMB int64) {
+func (h *Hub) BroadcastStatusChange(name string, status string, pid int, uptime int64, rssMB int64) {
 	payload, _ := json.Marshal(StatusChangePayload{
 		Name:     name,
 		Status:   status,
 		Pid:      pid,
 		Uptime:   uptime,
-		MemoryMB: memoryMB,
+		MemoryMB: rssMB,
 	})
 
 	h.broadcast <- SSEMessage{
@@ -127,6 +128,7 @@ func (h *Hub) BroadcastUptimeTick(allStatus map[string]status.ServiceStatus) {
 	for name, st := range allStatus {
 		if st.Status == "running" {
 			uptimes[name] = UptimeInfo{
+				Pid:      st.Pid,
 				Uptime:   st.Uptime,
 				MemoryMB: st.MemoryMB,
 			}

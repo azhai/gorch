@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/azhai/gorch/internal/config"
@@ -19,26 +20,32 @@ import (
 const maxRestartCount = 3
 
 type Supervisor struct {
-	cfg         *config.Config
-	processes   map[string]*ProcessInfo
-	mu          sync.RWMutex
-	cronSched   *cron.Scheduler
-	logMgr      *logs.Manager
-	statusCache *status.Cache
-	webServer   *web.Server
-	ipcClosers  []func()
-	hub         *web.Hub
-	pidPath     string
-	socketPath  string
-	configPath  string
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	cfg              *config.Config
+	processes        map[string]*ProcessInfo
+	mu               sync.RWMutex
+	cronSched        *cron.Scheduler
+	logMgr           *logs.Manager
+	statusCache      *status.Cache
+	webServer        *web.Server
+	ipcClosers       []func()
+	hub              *web.Hub
+	pidPath          string
+	servicesLockPath string
+	socketPath       string
+	configPath       string
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	adoptCandidates  map[string]int // PIDs from lock file for adoption on startup
 }
 
 type Option func(*Supervisor)
 
 func WithPidPath(path string) Option {
 	return func(s *Supervisor) { s.pidPath = path }
+}
+
+func WithServicesLock(path string) Option {
+	return func(s *Supervisor) { s.servicesLockPath = path }
 }
 
 func WithSocketPath(path string) Option {
@@ -51,12 +58,13 @@ func WithConfigPath(path string) Option {
 
 func NewSupervisor(cfg *config.Config, opts ...Option) *Supervisor {
 	s := &Supervisor{
-		cfg:         cfg,
-		processes:   make(map[string]*ProcessInfo),
-		cronSched:   cron.NewScheduler(),
-		statusCache: status.NewCache(),
-		pidPath:     "/tmp/gorch.pid",
-		socketPath:  "/tmp/gorch.sock",
+		cfg:              cfg,
+		processes:        make(map[string]*ProcessInfo),
+		cronSched:        cron.NewScheduler(),
+		statusCache:      status.NewCache(),
+		pidPath:          "/var/run/gorch.pid",
+		servicesLockPath: "/var/run/gorch-services.lock",
+		socketPath:       "/tmp/gorch.sock",
 	}
 
 	for _, opt := range opts {
@@ -80,6 +88,13 @@ func (s *Supervisor) Start(ctx context.Context) error {
 
 	if err := WritePidFile(s.pidPath, os.Getpid(), nil); err != nil {
 		return fmt.Errorf("failed to write PID file: %w", err)
+	}
+
+	// Read services lock file from previous graceful shutdown.
+	// If fresh, adoptCandidates holds PIDs to adopt; if stale/missing, nil.
+	s.adoptCandidates = s.readServicesLock()
+	if s.adoptCandidates != nil {
+		slog.Info("found fresh services lock, will try to adopt processes", "count", len(s.adoptCandidates))
 	}
 
 	// Clean up orphan processes from previous runs
@@ -174,6 +189,11 @@ func (s *Supervisor) uptimeTicker(ctx context.Context) {
 func (s *Supervisor) Stop(ctx context.Context) error {
 	slog.Info("stopping supervisor")
 
+	// Record running service PIDs to lock file before stopping.
+	// On next startup, if the lock file is fresh, gorch will try to adopt
+	// these processes instead of killing and restarting them.
+	s.writeServicesLock()
+
 	s.cronSched.Stop()
 
 	order := s.cfg.TopologicalOrder()
@@ -195,6 +215,7 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	s.hub.Stop()
 	ReleaseLock(s.pidPath + ".lock")
 	os.Remove(s.pidPath)
+	os.Remove(s.servicesLockPath)
 	os.Remove(s.socketPath)
 
 	// Clean up any remaining service PID files
@@ -235,6 +256,43 @@ func (s *Supervisor) RestartService(ctx context.Context, name string) error {
 		return fmt.Errorf("service not found: %s", name)
 	}
 
+	// If RESTART_CMD is set, run it in WORK_DIR instead of stop+start.
+	// This is for daemons (e.g. nginx/angie) that support graceful reload
+	// via a signal command like "nginx -s reload".
+	if svc.RESTART_CMD != "" {
+		slog.Info("restarting service via RESTART_CMD", "service", name, "cmd", svc.RESTART_CMD)
+		if err := runPreAction(svc.RESTART_CMD, svc.WORK_DIR); err != nil {
+			s.statusCache.Update(name, status.ServiceStatus{
+				Name:   name,
+				Status: config.StatusFailed,
+			})
+			s.hub.BroadcastStatusChange(name, string(config.StatusFailed), 0, 0, 0)
+			return fmt.Errorf("RESTART_CMD failed: %w", err)
+		}
+		// Refresh status from the real process (may have new PID after reload)
+		if proc, ok := s.processes[name]; ok {
+			var found int
+			if svc.PID_FILE != "" {
+				found = tryReadUserPidFile(svc.PID_FILE)
+			} else {
+				found = findMainProcessByName(svc.EXEC_CMD)
+			}
+			if found > 0 {
+				proc.Pid = found
+			}
+			treeMB := getProcessTreeMemoryMB(proc.Pid)
+			s.statusCache.Update(name, status.ServiceStatus{
+				Name:      name,
+				Status:    config.StatusRunning,
+				Pid:       proc.Pid,
+				StartedAt: proc.StartTime.Unix(),
+				MemoryMB:  treeMB,
+			})
+			s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, treeMB)
+		}
+		return nil
+	}
+
 	if err := s.stopService(name); err != nil {
 		slog.Warn("stop service failed during restart", "service", name, "error", err)
 	}
@@ -250,9 +308,68 @@ func (s *Supervisor) GetAllStatus() map[string]status.ServiceStatus {
 	// Refresh memory usage for running processes
 	s.mu.RLock()
 	for name, proc := range s.processes {
-		if proc.Cmd != nil && proc.Cmd.Process != nil {
-			memMB := getProcessMemoryMB(proc.Pid)
-			s.statusCache.UpdateMemory(name, memMB)
+		pid := proc.Pid
+		info := getProcessInfo(pid)
+		if info.state == "" {
+			slog.Info("GetAllStatus: process not found via ps", "service", name, "pid", pid, "proc.Pid", proc.Pid, "proc.StartTime", proc.StartTime)
+			// Tracked PID is gone. Try to locate the real process.
+			// If PID_FILE is configured, read it; otherwise fall back to findMainProcessByName.
+			if svc, ok := s.cfg.Services[name]; ok {
+				if svc.PID_FILE != "" {
+					if found := tryReadUserPidFile(svc.PID_FILE); found > 0 {
+						pid = found
+						// With PID_FILE, trust the PID file and verify with kill -0.
+						// This handles cases where ps can't see the process (e.g. PPID=1, permissions).
+						if syscall.Kill(pid, 0) == nil {
+							info.state = "R" // assume running
+							slog.Info("process found via PID_FILE + kill -0", "service", name, "pid", pid)
+						} else {
+							info = getProcessInfo(pid) // still try ps
+						}
+					}
+				}
+				if info.state == "" {
+					found := findMainProcessByName(svc.EXEC_CMD)
+					if found > 0 {
+						pid = found
+						info = getProcessInfo(pid)
+					}
+				}
+			}
+		}
+		if info.state == "" {
+			// Process is truly gone — mark as stopped.
+			slog.Info("process not found, marking stopped", "service", name, "lastPid", proc.Pid)
+			s.statusCache.Update(name, status.ServiceStatus{
+				Name:     name,
+				Status:   config.StatusStopped,
+				MemoryMB: 0,
+			})
+			s.hub.BroadcastStatusChange(name, string(config.StatusStopped), 0, 0, 0)
+			continue
+		}
+		// Update proc.Pid if we found a new one (daemonize: original exited, new master running)
+		pidChanged := pid != proc.Pid
+		if pidChanged {
+			slog.Info("PID changed, updating", "service", name, "oldPid", proc.Pid, "newPid", pid)
+			proc.Pid = pid
+			proc.StartTime = time.Now()
+		}
+		slog.Debug("process info", "service", name, "pid", pid, "ppid", info.ppid, "state", info.state, "etime", info.etime, "rssMB", info.rssMB, "cmd", info.command)
+		// Use getProcessTreeMemoryMB for memory, but if that fails (e.g. ps can't see the process),
+		// fall back to reading /proc/<pid>/statm directly (Linux only).
+		treeMB := getProcessTreeMemoryMB(pid)
+		if treeMB == 0 && info.state != "" {
+			// If memory is 0 but process is running, try to read memory directly.
+			if mem := readProcMemory(pid); mem > 0 {
+				treeMB = mem
+			}
+		}
+		if pidChanged {
+			// PID changed — update cache with new PID and reset uptime
+			s.statusCache.UpdateProcessInfo(name, pid, treeMB)
+		} else {
+			s.statusCache.UpdateMemory(name, treeMB)
 		}
 	}
 	s.mu.RUnlock()
@@ -405,6 +522,43 @@ func (s *Supervisor) HandleCommand(cmd ipc.ControlCommand) ipc.ControlResponse {
 }
 
 func (s *Supervisor) startService(ctx context.Context, name string, svc config.ServiceConfig) error {
+	// Try to adopt a previously-running process via lock file candidates.
+	// This happens when gorch was gracefully restarted and services survived.
+	if s.adoptCandidates != nil {
+		if pid, ok := s.adoptCandidates[name]; ok && pid > 0 {
+			if proc := AdoptProcess(name, pid); proc != nil {
+				slog.Info("adopted running process", "service", name, "pid", pid)
+				s.processes[name] = proc
+				treeMB := getProcessTreeMemoryMB(proc.Pid)
+				s.statusCache.Update(name, status.ServiceStatus{
+					Name:      name,
+					Status:    config.StatusRunning,
+					Pid:       proc.Pid,
+					StartedAt: proc.StartTime.Unix(),
+					MemoryMB:  treeMB,
+				})
+				s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, treeMB)
+				s.wg.Add(1)
+				go s.monitorAdoptedLoop(ctx, name, svc)
+				// Write per-service PID file for consistency
+				WriteServicePidFile(name, proc.Pid)
+				return nil
+			}
+			// Process is dead, remove from candidates
+			delete(s.adoptCandidates, name)
+		}
+	}
+
+	if svc.PRE_ACTION != "" {
+		if err := runPreAction(svc.PRE_ACTION, svc.WORK_DIR); err != nil {
+			slog.Warn("pre-action failed", "service", name, "cmd", svc.PRE_ACTION, "error", err)
+		}
+	}
+
+	if svc.CHECK_PORT > 0 {
+		killPortProcess(svc.CHECK_PORT)
+	}
+
 	proc, err := StartProcess(ctx, svc, name)
 	if err != nil {
 		s.statusCache.Update(name, status.ServiceStatus{
@@ -415,19 +569,38 @@ func (s *Supervisor) startService(ctx context.Context, name string, svc config.S
 		return err
 	}
 
+	// Wait briefly for daemonized processes (e.g. nginx/angie) that fork a new
+	// master and exit the original PID. If the original PID dies but a process
+	// with the same executable name appears, switch to tracking the new master.
+	if found := s.detectDaemonize(proc, svc); found > 0 {
+		proc.Pid = found
+		proc.Adopted = true
+		// Close the Cmd handle — the original process is gone, Wait() would fail.
+		if proc.Cmd != nil && proc.Cmd.Process != nil {
+			proc.Cmd.Process.Release()
+		}
+		proc.Cmd = nil
+		WriteServicePidFile(name, found)
+	}
+
 	s.processes[name] = proc
-	memMB := getProcessMemoryMB(proc.Pid)
+	treeMB := getProcessTreeMemoryMB(proc.Pid)
 	s.statusCache.Update(name, status.ServiceStatus{
 		Name:      name,
 		Status:    config.StatusRunning,
 		Pid:       proc.Pid,
 		StartedAt: proc.StartTime.Unix(),
-		MemoryMB:  memMB,
+		MemoryMB:  treeMB,
 	})
-	s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, memMB)
+	s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, treeMB)
 
-	s.wg.Add(1)
-	go s.monitorLoop(ctx, name, svc)
+	if proc.Adopted {
+		s.wg.Add(1)
+		go s.monitorAdoptedLoop(ctx, name, svc)
+	} else {
+		s.wg.Add(1)
+		go s.monitorLoop(ctx, name, svc)
+	}
 
 	return nil
 }
@@ -453,6 +626,62 @@ func (s *Supervisor) stopService(name string) error {
 	s.hub.BroadcastStatusChange(name, string(config.StatusStopped), 0, 0, 0)
 
 	return nil
+}
+
+// detectDaemonize waits briefly after process start to detect if the process
+// daemonized (forked a new master and exited the original PID).
+// Returns the new master PID if detected, 0 otherwise.
+// When PID_FILE is configured, reads the PID directly from the file instead of
+// using findMainProcessByName's complex pgrep + PPID heuristic.
+// detectDaemonize checks whether the just-started process daemonized (forked a new
+// master and exited the original PID). If so, returns the new master PID so the
+// supervisor can track it. Returns 0 if no daemonize was detected.
+//
+// With PID_FILE configured, we trust the PID file and read the real PID directly,
+// without waiting for the original process to exit (angie may not exit the parent).
+// Without PID_FILE, fall back to the original wait+find approach.
+func (s *Supervisor) detectDaemonize(proc *ProcessInfo, svc config.ServiceConfig) int {
+	originalPid := proc.Pid
+
+	// With PID_FILE, read the PID directly without waiting for the original process to exit.
+	// Angie and similar daemons may keep the parent process alive or use a different pattern.
+	if svc.PID_FILE != "" {
+		found := readUserPidFile(svc.PID_FILE, proc.StartTime)
+		if found > 0 && found != originalPid {
+			slog.Info("detected daemonize via PID_FILE, switching to new master PID",
+				"service", proc.Name, "oldPid", originalPid, "newPid", found)
+			return found
+		}
+		// PID_FILE didn't yield a different PID. If the original process is still running,
+		// maybe it's not a daemonize pattern — just use the original PID.
+		if found == 0 {
+			slog.Warn("PID_FILE configured but couldn't read PID, using original PID",
+				"service", proc.Name, "pidFile", svc.PID_FILE)
+		}
+		return 0
+	}
+
+	// Without PID_FILE, use the original approach: wait for the original process to exit.
+	if proc.Cmd == nil || proc.Cmd.Process == nil {
+		return 0
+	}
+
+	// Wait up to 500ms for the original process to exit (daemonize pattern).
+	for i := 0; i < 10; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if proc.Cmd.Process.Signal(syscall.Signal(0)) != nil {
+			// Original process has exited — find the new master.
+			found := findMainProcessByName(svc.EXEC_CMD)
+			if found > 0 && found != originalPid {
+				slog.Info("detected daemonize, switching to new master PID",
+					"service", proc.Name, "oldPid", originalPid, "newPid", found)
+				return found
+			}
+			// Original exited but no replacement found — not a daemonize, just a crash.
+			return 0
+		}
+	}
+	return 0
 }
 
 func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.ServiceConfig) {
@@ -495,18 +724,23 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 	}
 
 	if shouldRestart && proc.RestartCnt < maxRestartCount {
-		proc.RestartCnt++
+		restartCnt := proc.RestartCnt + 1
 		// Remove old proc before starting new one
 		delete(s.processes, name)
 		s.mu.Unlock()
 
-		if svc.BACK_OFF > 0 {
-			slog.Info("backing off before restart", "service", name, "backOffSeconds", svc.BACK_OFF)
-			time.Sleep(time.Duration(svc.BACK_OFF) * time.Second)
+		// Force back-off to allow port/resource release; default 2s if unset
+		backOff := svc.BACK_OFF
+		if backOff <= 0 {
+			backOff = 2
 		}
+		slog.Info("backing off before restart", "service", name, "backOffSeconds", backOff, "restartCount", restartCnt)
+		time.Sleep(time.Duration(backOff) * time.Second)
 
 		if err := s.startService(ctx, name, svc); err != nil {
 			slog.Error("restart failed", "service", name, "error", err)
+		} else if newProc, ok := s.processes[name]; ok {
+			newProc.RestartCnt = restartCnt
 		}
 		return
 	}
@@ -519,6 +753,94 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 		} else {
 			finalStatus = config.StatusFailed
 		}
+	}
+
+	s.statusCache.Update(name, status.ServiceStatus{
+		Name:     name,
+		Status:   finalStatus,
+		ExitCode: &exitCode,
+	})
+	s.hub.BroadcastStatusChange(name, string(finalStatus), 0, 0, 0)
+	s.mu.Unlock()
+}
+
+// monitorAdoptedLoop polls an adopted process (no exec.Cmd) via signal 0.
+// When the process disappears, it applies the same restart logic as monitorLoop.
+func (s *Supervisor) monitorAdoptedLoop(ctx context.Context, name string, svc config.ServiceConfig) {
+	defer s.wg.Done()
+
+	proc, exists := s.processes[name]
+	if !exists {
+		return
+	}
+
+	pid := proc.Pid
+	p, _ := os.FindProcess(pid)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if p.Signal(syscall.Signal(0)) != nil {
+				// process is gone
+				goto exited
+			}
+		}
+	}
+
+exited:
+	exitCode := -1
+	slog.Info("adopted service exited", "service", name, "pid", pid)
+
+	if proc.ManualStop {
+		return
+	}
+
+	s.mu.Lock()
+	if proc.ManualStop {
+		s.mu.Unlock()
+		return
+	}
+
+	shouldRestart := false
+	switch config.RestartPolicy(svc.RESTART_POLICY) {
+	case config.RestartAlways:
+		shouldRestart = true
+	case config.RestartOnFailure:
+		shouldRestart = exitCode != 0
+	case config.RestartNever:
+		shouldRestart = false
+	}
+
+	if shouldRestart && proc.RestartCnt < maxRestartCount {
+		restartCnt := proc.RestartCnt + 1
+		delete(s.processes, name)
+		s.mu.Unlock()
+
+		backOff := svc.BACK_OFF
+		if backOff <= 0 {
+			backOff = 2
+		}
+		slog.Info("backing off before restart", "service", name, "backOffSeconds", backOff, "restartCount", restartCnt)
+		time.Sleep(time.Duration(backOff) * time.Second)
+
+		if err := s.startService(ctx, name, svc); err != nil {
+			slog.Error("restart failed", "service", name, "error", err)
+		} else if newProc, ok := s.processes[name]; ok {
+			newProc.RestartCnt = restartCnt
+		}
+		return
+	}
+
+	delete(s.processes, name)
+	finalStatus := config.StatusStopped
+	if proc.RestartCnt >= maxRestartCount {
+		finalStatus = config.StatusCrashed
+	} else {
+		finalStatus = config.StatusFailed
 	}
 
 	s.statusCache.Update(name, status.ServiceStatus{
@@ -612,12 +934,59 @@ func (s *Supervisor) HandleReload() error {
 	return nil
 }
 
-// cleanupOrphans checks for stale PID files from previous runs and kills orphan processes.
+// cleanupOrphans removes stale PID files for processes that are no longer running.
+// Live processes are adopted by startService, not killed here.
 func (s *Supervisor) cleanupOrphans() {
-	supervisorPid := os.Getpid()
 	for name := range s.cfg.Services {
-		if KillOrphanProcess(name, supervisorPid) {
-			slog.Info("killed orphan process", "service", name)
+		pid, err := ReadServicePidFile(name)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			RemoveServicePidFile(name)
+			continue
+		}
+		if err := p.Signal(syscall.Signal(0)); err != nil {
+			// process is dead, clean up stale PID file
+			RemoveServicePidFile(name)
+			slog.Info("cleaned stale pid file", "service", name, "pid", pid)
 		}
 	}
+}
+
+// writeServicesLock records all running service PIDs to the lock file.
+// Called on graceful shutdown so the next startup can adopt live processes.
+func (s *Supervisor) writeServicesLock() {
+	s.mu.RLock()
+	services := make(map[string]int)
+	for name, proc := range s.processes {
+		if proc.Pid > 0 {
+			services[name] = proc.Pid
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(services) == 0 {
+		return
+	}
+
+	if err := WritePidFile(s.servicesLockPath, os.Getpid(), services); err != nil {
+		slog.Warn("failed to write services lock file", "error", err)
+	}
+}
+
+// readServicesLock reads the lock file and returns service PIDs if fresh.
+// Returns nil if the file is missing, stale, or invalid.
+func (s *Supervisor) readServicesLock() map[string]int {
+	pidFile, err := ReadPidFile(s.servicesLockPath)
+	if err != nil {
+		return nil
+	}
+	if time.Since(pidFile.UpdatedAt) > maxOrphanAge {
+		slog.Info("services lock file is stale, ignoring", "age", time.Since(pidFile.UpdatedAt))
+		os.Remove(s.servicesLockPath)
+		return nil
+	}
+	return pidFile.Services
 }
