@@ -1,6 +1,5 @@
 import { getToken, removeToken } from './authStore'
-
-const API_BASE = '/api'
+import { API_BASE } from './config'
 
 export interface ServiceStatus {
   name: string

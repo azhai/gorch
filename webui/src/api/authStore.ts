@@ -1,3 +1,5 @@
+import { API_BASE } from './config'
+
 const TOKEN_KEY = 'gorch_token'
 
 let memoryToken: string | null = null
@@ -62,7 +64,7 @@ export async function detectAuthMode(): Promise<boolean> {
   }
 
   try {
-    const res = await fetch('/api/services')
+    const res = await fetch(`${API_BASE}/services`)
     if (res.status === 401) {
       authEnabled = true
     } else {

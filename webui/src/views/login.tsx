@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { setToken, isAuthEnabled, getToken } from '../api/authStore'
+import { API_BASE } from '../api/config'
 
 export default function LoginView() {
   const navigate = useNavigate()
@@ -29,7 +30,7 @@ export default function LoginView() {
     setError(null)
 
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -68,7 +69,7 @@ export default function LoginView() {
     setError(null)
 
     try {
-      const res = await fetch('/api/auth/login/totp', {
+      const res = await fetch(`${API_BASE}/auth/login/totp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, code: totpCode }),

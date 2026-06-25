@@ -7,6 +7,7 @@ import LoginView from './views/login'
 import AuthGuard from './components/authGuard'
 import { useSSE } from './hooks/useSSE'
 import { isAuthEnabled, getToken, removeToken } from './api/authStore'
+import { ROUTER_BASENAME, STATIC_PREFIX } from './api/config'
 
 function AppLayout() {
   const { connected } = useSSE()
@@ -25,7 +26,7 @@ function AppLayout() {
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
-              <img src="/logo.svg" alt="Gorch" className="h-6 w-6" />
+              <img src={`${STATIC_PREFIX}/logo.svg`} alt="Gorch" className="h-6 w-6" />
               <h1 className="text-xl font-semibold text-gray-800">Gorch</h1>
             </div>
             <nav className="flex gap-4">
@@ -75,7 +76,7 @@ function AppLayout() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <Routes>
         <Route path="/login" element={<LoginView />} />
         <Route

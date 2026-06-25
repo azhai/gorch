@@ -56,22 +56,27 @@ func staticAssetHandler(c echo.Context) error {
 	return c.Blob(http.StatusOK, mimeTypeForExt(ext), data)
 }
 
-// spaFallbackHandler serves the SPA.
-// It tries to serve the requested file, then falls back to index.html.
-// Route: /*
-func spaFallbackHandler(c echo.Context) error {
+// spaFallbackHandler serves the SPA and static files.
+// Registered as GET "/*" on the server. Returns 404 for unmatched API
+// paths, tries embedded static files, then falls back to index.html.
+func (s *Server) spaFallbackHandler(c echo.Context) error {
 	reqPath := c.Request().URL.Path
 	cleaned := path.Clean(reqPath)
 	if strings.Contains(cleaned, "..") {
 		return c.NoContent(http.StatusForbidden)
 	}
 
-	if strings.HasPrefix(cleaned, "/api/") {
+	// Refuse API paths that didn't match a group route
+	if s.isAPIPath(cleaned) {
 		return c.NoContent(http.StatusNotFound)
 	}
 
+	// Try to serve a static file (logo.svg, favicon.svg, etc.)
 	if cleaned != "/" && cleaned != "" {
 		fileName := strings.TrimPrefix(cleaned, "/")
+		if s.urlPrefix != "" {
+			fileName = strings.TrimPrefix(fileName, s.urlPrefix+"/")
+		}
 		fsys := getFileSystem()
 		data, err := fs.ReadFile(fsys, fileName)
 		if err == nil {
@@ -80,14 +85,18 @@ func spaFallbackHandler(c echo.Context) error {
 		}
 	}
 
-	fsys := getFileSystem()
-	data, err := fs.ReadFile(fsys, "index.html")
-	if err != nil {
-		return c.NoContent(http.StatusInternalServerError)
-	}
+	// Fallback to pre-rendered index.html (with __URL_PREFIX__ injected)
+	return c.Blob(http.StatusOK, "text/html; charset=utf-8", s.indexHTML)
+}
 
-	c.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
-	return c.Blob(http.StatusOK, "text/html; charset=utf-8", data)
+// isAPIPath reports whether a request path targets the API.
+// Handles both root mount ("/api/...") and prefixed mount ("/gorch/api/...").
+func (s *Server) isAPIPath(p string) bool {
+	apiSeg := "/api"
+	if s.urlPrefix != "" {
+		apiSeg = "/" + s.urlPrefix + "/api"
+	}
+	return p == apiSeg || strings.HasPrefix(p, apiSeg+"/")
 }
 
 // mimeTypeForExt returns the MIME type for a file extension.

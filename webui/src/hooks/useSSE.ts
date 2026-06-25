@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getToken } from '../api/authStore'
+import { API_BASE } from '../api/config'
 
 interface SSEMessage {
   type: string
@@ -17,7 +18,7 @@ export function useSSE() {
     const token = getToken()
     if (!token) return
 
-    const url = `/api/events?token=${encodeURIComponent(token)}`
+    const url = `${API_BASE}/events?token=${encodeURIComponent(token)}`
     const es = new EventSource(url)
     esRef.current = es
 

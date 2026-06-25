@@ -45,6 +45,11 @@ WEB_ADDR = "127.0.0.1:8080"
 WEB_ENABLE = true
 WEB_PASS = 'secret'
 WEB_USER = 'admin'
+# Mount the web UI and API under a sub-path, e.g. "/gorch" serves at
+# http://host/gorch/api/services. Leave empty ("") for root mount.
+# No rebuild needed — the binary reads this at startup and injects
+# window.__URL_PREFIX__ into the SPA at runtime.
+URL_PREFIX = ""
 TOTP_ENABLE = false
 # 生成命令: openssl rand -hex 32
 TOTP_SECRET = ''

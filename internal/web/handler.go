@@ -302,57 +302,99 @@ func (s *Server) handleValidateCron(c echo.Context) error {
 }
 
 func (s *Server) handleTOTPSetup(c echo.Context) error {
-	if s.totpHandler == nil {
+	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
-	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
-	return s.totpHandler.HandleSetup(c)
+	userID := s.supervisor.GetConfig().Web.WEB_USER
+	result, err := s.TOTP.SetupTOTP(userID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errResponse("failed to setup TOTP"))
+	}
+	return c.JSON(http.StatusOK, okResponse(result))
 }
 
 func (s *Server) handleTOTPVerifySetup(c echo.Context) error {
-	if s.totpHandler == nil {
+	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
-	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
-	return s.totpHandler.HandleVerifySetup(c)
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request"))
+	}
+	userID := s.supervisor.GetConfig().Web.WEB_USER
+	if err := s.TOTP.VerifySetup(userID, req.Code); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse(err.Error()))
+	}
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "TOTP enabled"}))
 }
 
 func (s *Server) handleTOTPVerify(c echo.Context) error {
-	if s.totpHandler == nil {
+	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
-	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
-	return s.totpHandler.HandleVerify(c)
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request"))
+	}
+	userID := s.supervisor.GetConfig().Web.WEB_USER
+	if err := s.TOTP.Verify(userID, req.Code); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse(err.Error()))
+	}
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "verified"}))
 }
 
 func (s *Server) handleTOTPVerifyBackup(c echo.Context) error {
-	if s.totpHandler == nil {
+	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
-	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
-	return s.totpHandler.HandleVerifyBackup(c)
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request"))
+	}
+	userID := s.supervisor.GetConfig().Web.WEB_USER
+	if err := s.TOTP.VerifyBackup(userID, req.Code); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse(err.Error()))
+	}
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "verified"}))
 }
 
 func (s *Server) handleTOTPDisable(c echo.Context) error {
-	if s.totpHandler == nil {
+	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
-	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
-	return s.totpHandler.HandleDisable(c)
+	userID := s.supervisor.GetConfig().Web.WEB_USER
+	if err := s.TOTP.Disable(userID); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse(err.Error()))
+	}
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "TOTP disabled"}))
 }
 
 func (s *Server) handleTOTPStatus(c echo.Context) error {
-	if s.totpHandler == nil {
+	if s.TOTP == nil {
 		return c.JSON(http.StatusOK, okResponse(map[string]any{"enabled": false, "hasBinding": false}))
 	}
-	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
-	return s.totpHandler.HandleStatus(c)
+	userID := s.supervisor.GetConfig().Web.WEB_USER
+	result, err := s.TOTP.Status(userID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errResponse("failed to get status"))
+	}
+	return c.JSON(http.StatusOK, okResponse(result))
 }
 
 func (s *Server) handleTOTPRegenerateBackup(c echo.Context) error {
-	if s.totpHandler == nil {
+	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
-	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
-	return s.totpHandler.HandleRegenerateBackupCodes(c)
+	userID := s.supervisor.GetConfig().Web.WEB_USER
+	codes, err := s.TOTP.RegenerateBackupCodes(userID)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse(err.Error()))
+	}
+	return c.JSON(http.StatusOK, okResponse(map[string]any{"backupCodes": codes}))
 }

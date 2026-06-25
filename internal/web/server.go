@@ -1,17 +1,17 @@
 package web
 
 import (
+	"bytes"
 	"context"
-	"encoding/hex"
-	"log/slog"
-	"os"
-	"path/filepath"
+	"fmt"
+	"io/fs"
+	"strings"
 
+	gototp "github.com/azhai/go-totp"
+	"github.com/azhai/gobus/log"
 	"github.com/azhai/gorch/internal/config"
 	"github.com/azhai/gorch/internal/cron"
-	"github.com/azhai/gorch/internal/logs"
 	"github.com/azhai/gorch/internal/status"
-	"github.com/azhai/gorch/internal/web/totp"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
@@ -20,7 +20,7 @@ type SupervisorProvider interface {
 	GetStatus(name string) (status.ServiceStatus, bool)
 	GetAllStatus() map[string]status.ServiceStatus
 	GetConfig() *config.Config
-	GetLogManager() *logs.Manager
+	GetLogManager() *log.Manager
 	GetCronScheduler() *cron.Scheduler
 	GetHub() *Hub
 	StartService(ctx context.Context, name string) error
@@ -33,18 +33,21 @@ type SupervisorProvider interface {
 }
 
 type Server struct {
-	app           *echo.Echo
-	supervisor    SupervisorProvider
-	addr          string
-	totpStorage   *totp.Storage
-	totpMasterKey []byte
-	totpHandler   *totp.Handler
+	app        *echo.Echo
+	supervisor SupervisorProvider
+	addr       string
+	TOTP       *gototp.TOTP
+	urlPrefix  string // normalized: no leading/trailing slash, e.g. "gorch"
+	indexHTML  []byte // pre-rendered with window.__URL_PREFIX__ injected
 }
 
 func NewServer(addr string, sup SupervisorProvider) *Server {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
+
+	cfg := sup.GetConfig().Web
+	urlPrefix := normalizePrefix(cfg.URL_PREFIX)
 
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins:     []string{"*"},
@@ -53,40 +56,22 @@ func NewServer(addr string, sup SupervisorProvider) *Server {
 		AllowCredentials: false,
 	}))
 
-	e.Use(authMiddleware(sup.GetConfig().Web))
+	e.Use(authMiddleware(cfg, urlPrefix))
 
 	s := &Server{
 		app:        e,
 		supervisor: sup,
 		addr:       addr,
+		urlPrefix:  urlPrefix,
 	}
 
-	cfg := sup.GetConfig().Web
-	if cfg.TOTP_ENABLE && cfg.TOTP_SECRET != "" {
-		masterKey, err := hex.DecodeString(cfg.TOTP_SECRET)
-		if err != nil || len(masterKey) != 32 {
-			slog.Error("invalid TOTP_SECRET: must be 32 bytes hex-encoded (64 chars)")
-		} else {
-			if cfg.TOTP_DB == "" {
-				cfg.TOTP_DB = "/var/lib/gorch/totp.db"
-			}
-			dbDir := filepath.Dir(cfg.TOTP_DB)
-			if err := os.MkdirAll(dbDir, 0700); err != nil {
-				slog.Error("failed to create TOTP db directory", "path", dbDir, "error", err)
-			} else {
-				storage, err := totp.InitDB(cfg.TOTP_DB)
-				if err != nil {
-					slog.Error("failed to init TOTP database", "path", cfg.TOTP_DB, "error", err)
-				} else {
-					s.totpStorage = storage
-					s.totpMasterKey = masterKey
-					s.totpHandler = totp.NewHandler(storage, masterKey, "Gorch")
-					slog.Info("TOTP initialized", "db", cfg.TOTP_DB)
-				}
-			}
-		}
-	}
-
+	s.TOTP = gototp.NewTOTPFromOptions(gototp.Options{
+		Enable: cfg.TOTP_ENABLE,
+		Secret: cfg.TOTP_SECRET,
+		DBPath: cfg.TOTP_DB,
+		Issuer: "Gorch",
+	})
+	s.initIndexHTML()
 	s.setupRoutes()
 	return s
 }
@@ -101,12 +86,17 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) setupRoutes() {
-	api := s.app.Group("/api")
+	prefix := ""
+	if s.urlPrefix != "" {
+		prefix = "/" + s.urlPrefix
+	}
+
+	api := s.app.Group(prefix + "/api")
 
 	api.POST("/auth/login", s.handleLogin)
 	api.POST("/auth/login/totp", s.handleLoginTotp)
 
-	if s.totpHandler != nil {
+	if s.TOTP != nil {
 		api.POST("/totp/setup", s.handleTOTPSetup)
 		api.POST("/totp/verify-setup", s.handleTOTPVerifySetup)
 		api.POST("/totp/verify", s.handleTOTPVerify)
@@ -137,6 +127,30 @@ func (s *Server) setupRoutes() {
 
 	api.GET("/events", s.handleSSE)
 
-	s.app.GET("/assets/*", staticAssetHandler)
-	s.app.GET("/*", spaFallbackHandler)
+	s.app.GET(prefix+"/assets/*", staticAssetHandler)
+	s.app.GET("/*", s.spaFallbackHandler)
+}
+
+// initIndexHTML reads the embedded index.html and injects
+// window.__URL_PREFIX__ so the SPA knows its mount point at runtime.
+// Called once at server startup; the result is cached in s.indexHTML.
+func (s *Server) initIndexHTML() {
+	fsys := getFileSystem()
+	data, err := fs.ReadFile(fsys, "index.html")
+	if err != nil {
+		s.indexHTML = []byte("<!DOCTYPE html><html><body>web UI not found</body></html>")
+		return
+	}
+	prefix := ""
+	if s.urlPrefix != "" {
+		prefix = "/" + s.urlPrefix
+	}
+	inject := fmt.Sprintf(`<script>window.__URL_PREFIX__="%s";</script>`, prefix)
+	s.indexHTML = bytes.Replace(data, []byte("</head>"), []byte(inject+"</head>"), 1)
+}
+
+// normalizePrefix strips leading/trailing slashes from URL_PREFIX.
+// "/gorch/" -> "gorch", "gorch" -> "gorch", "/" -> "", "" -> ""
+func normalizePrefix(p string) string {
+	return strings.Trim(strings.TrimSpace(p), "/")
 }

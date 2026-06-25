@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azhai/go-totp"
 	"github.com/azhai/gorch/internal/config"
-	"github.com/azhai/gorch/internal/web/totp"
 	"github.com/labstack/echo/v4"
 )
 
-func authMiddleware(cfg config.WebConfig) echo.MiddlewareFunc {
+func authMiddleware(cfg config.WebConfig, urlPrefix string) echo.MiddlewareFunc {
 	if !cfg.WEB_AUTH {
 		return func(next echo.HandlerFunc) echo.HandlerFunc {
 			return func(c echo.Context) error {
@@ -27,22 +27,29 @@ func authMiddleware(cfg config.WebConfig) echo.MiddlewareFunc {
 
 	secret := []byte(cfg.WEB_PASS)
 
+	apiPrefix := "/api"
+	if urlPrefix != "" {
+		apiPrefix = "/" + urlPrefix + "/api"
+	}
+	authPrefix := apiPrefix + "/auth"
+	eventsPrefix := apiPrefix + "/events"
+
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			path := c.Path()
 
-			if strings.HasPrefix(path, "/api/auth") {
+			if strings.HasPrefix(path, authPrefix) {
 				return next(c)
 			}
 
-			if !strings.HasPrefix(path, "/api/") {
+			if !strings.HasPrefix(path, apiPrefix+"/") {
 				return next(c)
 			}
 
 			token := ""
 
 			// SSE uses query param for token since EventSource API doesn't support headers
-			if strings.HasPrefix(path, "/api/events") {
+			if strings.HasPrefix(path, eventsPrefix) {
 				token = c.QueryParam("token")
 			} else {
 				authHeader := c.Request().Header.Get("Authorization")
@@ -78,8 +85,8 @@ func (s *Server) handleLogin(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, errResponse("invalid credentials"))
 	}
 
-	if cfg.TOTP_ENABLE && s.totpStorage != nil {
-		binding, _ := s.totpStorage.GetBinding(body.Username)
+	if cfg.TOTP_ENABLE && s.TOTP.IsEnabled() {
+		binding, _ := s.TOTP.GetBinding(body.Username)
 		if binding != nil && binding.Enabled {
 			return c.JSON(http.StatusOK, okResponse(map[string]any{
 				"requireTotp": true,
@@ -108,11 +115,11 @@ func (s *Server) handleLoginTotp(c echo.Context) error {
 
 	cfg := s.supervisor.GetConfig().Web
 
-	if s.totpStorage == nil || s.totpMasterKey == nil {
+	if !s.TOTP.IsEnabled() {
 		return c.JSON(http.StatusInternalServerError, errResponse("TOTP not configured"))
 	}
 
-	binding, err := s.totpStorage.GetBinding(body.Username)
+	binding, err := s.TOTP.GetBinding(body.Username)
 	if err != nil || binding == nil || !binding.Enabled {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not enabled for user"))
 	}
@@ -121,7 +128,7 @@ func (s *Server) handleLoginTotp(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, errResponse("account locked"))
 	}
 
-	secret, err := totp.DecryptSecret(binding.SecretEnc, s.totpMasterKey)
+	secret, err := s.TOTP.Decrypt(binding)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, errResponse("failed to decrypt secret"))
 	}
@@ -134,17 +141,17 @@ func (s *Server) handleLoginTotp(c echo.Context) error {
 			t := time.Now().Add(15 * time.Minute)
 			lockedUntil = &t
 		}
-		s.totpStorage.UpdateFailedAttempts(body.Username, newAttempts, lockedUntil)
+		s.TOTP.UpdateFailedAttempts(body.Username, newAttempts, lockedUntil)
 		return c.JSON(http.StatusBadRequest, errResponse("invalid verification code"))
 	}
 
-	used, _ := s.totpStorage.IsCodeUsed(body.Username, window, body.Code)
+	used, _ := s.TOTP.IsCodeUsed(body.Username, window, body.Code)
 	if used {
 		return c.JSON(http.StatusBadRequest, errResponse("code already used"))
 	}
 
-	s.totpStorage.SaveUsedCode(body.Username, window, body.Code)
-	s.totpStorage.UpdateFailedAttempts(body.Username, 0, nil)
+	s.TOTP.SaveUsedCode(body.Username, window, body.Code)
+	s.TOTP.UpdateFailedAttempts(body.Username, 0, nil)
 
 	token, err := generateToken(body.Username, []byte(cfg.WEB_PASS))
 	if err != nil {

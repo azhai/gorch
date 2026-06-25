@@ -31,6 +31,7 @@ type WebConfig struct {
 	WEB_AUTH    bool   `toml:"WEB_AUTH"`
 	WEB_USER    string `toml:"WEB_USER"`
 	WEB_PASS    string `toml:"WEB_PASS"`
+	URL_PREFIX  string `toml:"URL_PREFIX"`
 	TOTP_ENABLE bool   `toml:"TOTP_ENABLE"`
 	TOTP_SECRET string `toml:"TOTP_SECRET"`
 	TOTP_DB     string `toml:"TOTP_DB"`

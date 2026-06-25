@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/azhai/gobus/log"
 	"github.com/azhai/gorch/internal/config"
 	"github.com/azhai/gorch/internal/cron"
 	"github.com/azhai/gorch/internal/ipc"
-	"github.com/azhai/gorch/internal/logs"
 	"github.com/azhai/gorch/internal/status"
 	"github.com/azhai/gorch/internal/web"
 )
@@ -24,7 +24,7 @@ type Supervisor struct {
 	processes        map[string]*ProcessInfo
 	mu               sync.RWMutex
 	cronSched        *cron.Scheduler
-	logMgr           *logs.Manager
+	logMgr           *log.Manager
 	statusCache      *status.Cache
 	webServer        *web.Server
 	ipcClosers       []func()
@@ -71,7 +71,7 @@ func NewSupervisor(cfg *config.Config, opts ...Option) *Supervisor {
 		opt(s)
 	}
 
-	s.logMgr = logs.NewManager("/var/log/gorch")
+	s.logMgr = log.NewManager("/var/log/gorch")
 	s.hub = web.NewHub()
 
 	return s
@@ -400,7 +400,7 @@ func (s *Supervisor) GetConfig() *config.Config {
 	return s.cfg
 }
 
-func (s *Supervisor) GetLogManager() *logs.Manager {
+func (s *Supervisor) GetLogManager() *log.Manager {
 	return s.logMgr
 }
 
