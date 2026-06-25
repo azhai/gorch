@@ -180,3 +180,44 @@ export async function fetchCronHistory(name: string): Promise<unknown[]> {
   const json: APIResponse<unknown[]> = await res.json()
   return json.data || []
 }
+
+export interface TOTPSetupResponse {
+  secret: string
+  qrCode: string
+  backupCodes: string[]
+}
+
+export interface TOTPStatus {
+  enabled: boolean
+  backupCodes: number
+  hasBinding: boolean
+}
+
+export async function totpSetup(): Promise<APIResponse<TOTPSetupResponse>> {
+  const res = await authFetch(`${API_BASE}/totp/setup`, { method: 'POST' })
+  return res.json()
+}
+
+export async function totpVerifySetup(code: string): Promise<APIResponse<void>> {
+  const res = await authFetch(`${API_BASE}/totp/verify-setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  })
+  return res.json()
+}
+
+export async function totpStatus(): Promise<APIResponse<TOTPStatus>> {
+  const res = await authFetch(`${API_BASE}/totp/status`)
+  return res.json()
+}
+
+export async function totpDisable(): Promise<APIResponse<void>> {
+  const res = await authFetch(`${API_BASE}/totp/disable`, { method: 'POST' })
+  return res.json()
+}
+
+export async function totpRegenerateBackupCodes(): Promise<APIResponse<{ backupCodes: string[] }>> {
+  const res = await authFetch(`${API_BASE}/totp/backup-codes/regenerate`, { method: 'POST' })
+  return res.json()
+}

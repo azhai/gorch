@@ -45,3 +45,7 @@ WEB_ADDR = "127.0.0.1:8080"
 WEB_ENABLE = true
 WEB_PASS = 'secret'
 WEB_USER = 'admin'
+TOTP_ENABLE = false
+# 生成命令: openssl rand -hex 32
+TOTP_SECRET = ''
+TOTP_DB = 'auth_totp.db'

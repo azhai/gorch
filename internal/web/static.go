@@ -60,14 +60,16 @@ func staticAssetHandler(c echo.Context) error {
 // It tries to serve the requested file, then falls back to index.html.
 // Route: /*
 func spaFallbackHandler(c echo.Context) error {
-	// Use c.Request().URL.Path to get the actual request path, not the route pattern
 	reqPath := c.Request().URL.Path
 	cleaned := path.Clean(reqPath)
 	if strings.Contains(cleaned, "..") {
 		return c.NoContent(http.StatusForbidden)
 	}
 
-	// Try to serve the requested file directly (for favicon.svg, logo.svg, etc.)
+	if strings.HasPrefix(cleaned, "/api/") {
+		return c.NoContent(http.StatusNotFound)
+	}
+
 	if cleaned != "/" && cleaned != "" {
 		fileName := strings.TrimPrefix(cleaned, "/")
 		fsys := getFileSystem()
@@ -78,7 +80,6 @@ func spaFallbackHandler(c echo.Context) error {
 		}
 	}
 
-	// Fallback to index.html for SPA routing
 	fsys := getFileSystem()
 	data, err := fs.ReadFile(fsys, "index.html")
 	if err != nil {

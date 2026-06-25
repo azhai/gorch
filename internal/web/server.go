@@ -2,11 +2,16 @@ package web
 
 import (
 	"context"
+	"encoding/hex"
+	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/azhai/gorch/internal/config"
 	"github.com/azhai/gorch/internal/cron"
 	"github.com/azhai/gorch/internal/logs"
 	"github.com/azhai/gorch/internal/status"
+	"github.com/azhai/gorch/internal/web/totp"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
@@ -28,9 +33,12 @@ type SupervisorProvider interface {
 }
 
 type Server struct {
-	app        *echo.Echo
-	supervisor SupervisorProvider
-	addr       string
+	app           *echo.Echo
+	supervisor    SupervisorProvider
+	addr          string
+	totpStorage   *totp.Storage
+	totpMasterKey []byte
+	totpHandler   *totp.Handler
 }
 
 func NewServer(addr string, sup SupervisorProvider) *Server {
@@ -53,6 +61,32 @@ func NewServer(addr string, sup SupervisorProvider) *Server {
 		addr:       addr,
 	}
 
+	cfg := sup.GetConfig().Web
+	if cfg.TOTP_ENABLE && cfg.TOTP_SECRET != "" {
+		masterKey, err := hex.DecodeString(cfg.TOTP_SECRET)
+		if err != nil || len(masterKey) != 32 {
+			slog.Error("invalid TOTP_SECRET: must be 32 bytes hex-encoded (64 chars)")
+		} else {
+			if cfg.TOTP_DB == "" {
+				cfg.TOTP_DB = "/var/lib/gorch/totp.db"
+			}
+			dbDir := filepath.Dir(cfg.TOTP_DB)
+			if err := os.MkdirAll(dbDir, 0700); err != nil {
+				slog.Error("failed to create TOTP db directory", "path", dbDir, "error", err)
+			} else {
+				storage, err := totp.InitDB(cfg.TOTP_DB)
+				if err != nil {
+					slog.Error("failed to init TOTP database", "path", cfg.TOTP_DB, "error", err)
+				} else {
+					s.totpStorage = storage
+					s.totpMasterKey = masterKey
+					s.totpHandler = totp.NewHandler(storage, masterKey, "Gorch")
+					slog.Info("TOTP initialized", "db", cfg.TOTP_DB)
+				}
+			}
+		}
+	}
+
 	s.setupRoutes()
 	return s
 }
@@ -70,6 +104,22 @@ func (s *Server) setupRoutes() {
 	api := s.app.Group("/api")
 
 	api.POST("/auth/login", s.handleLogin)
+	api.POST("/auth/login/totp", s.handleLoginTotp)
+
+	if s.totpHandler != nil {
+		api.POST("/totp/setup", s.handleTOTPSetup)
+		api.POST("/totp/verify-setup", s.handleTOTPVerifySetup)
+		api.POST("/totp/verify", s.handleTOTPVerify)
+		api.POST("/totp/verify-backup", s.handleTOTPVerifyBackup)
+		api.POST("/totp/disable", s.handleTOTPDisable)
+		api.GET("/totp/status", s.handleTOTPStatus)
+		api.POST("/totp/regenerate-backup", s.handleTOTPRegenerateBackup)
+	} else {
+		api.Any("/totp/*", func(c echo.Context) error {
+			return c.JSON(503, map[string]any{"success": false, "message": "TOTP not configured"})
+		})
+	}
+
 	api.GET("/services", s.handleGetServices)
 	api.POST("/services", s.handleCreateService)
 	api.GET("/services/:name", s.handleGetService)

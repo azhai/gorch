@@ -26,11 +26,14 @@ type ServiceConfig struct {
 }
 
 type WebConfig struct {
-	WEB_ENABLE bool   `toml:"WEB_ENABLE"`
-	WEB_ADDR   string `toml:"WEB_ADDR"`
-	WEB_AUTH   bool   `toml:"WEB_AUTH"`
-	WEB_USER   string `toml:"WEB_USER"`
-	WEB_PASS   string `toml:"WEB_PASS"`
+	WEB_ENABLE  bool   `toml:"WEB_ENABLE"`
+	WEB_ADDR    string `toml:"WEB_ADDR"`
+	WEB_AUTH    bool   `toml:"WEB_AUTH"`
+	WEB_USER    string `toml:"WEB_USER"`
+	WEB_PASS    string `toml:"WEB_PASS"`
+	TOTP_ENABLE bool   `toml:"TOTP_ENABLE"`
+	TOTP_SECRET string `toml:"TOTP_SECRET"`
+	TOTP_DB     string `toml:"TOTP_DB"`
 }
 
 type RestartPolicy string

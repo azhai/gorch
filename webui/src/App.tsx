@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Link, Outlet, useNavigate } from 'react-r
 import Dashboard from './views/dashboard'
 import Logs from './views/logs'
 import Config from './views/config'
+import TOTPSettings from './views/totp'
 import LoginView from './views/login'
 import AuthGuard from './components/authGuard'
 import { useSSE } from './hooks/useSSE'
@@ -37,6 +38,11 @@ function AppLayout() {
               <Link to="/config" className="text-sm text-gray-600 hover:text-gray-900 transition-colors">
                 Config
               </Link>
+              {showLogout && (
+                <Link to="/totp" className="text-sm text-gray-600 hover:text-gray-900 transition-colors">
+                  Security
+                </Link>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-2">
@@ -82,6 +88,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/config" element={<Config />} />
+          <Route path="/totp" element={<TOTPSettings />} />
         </Route>
       </Routes>
     </BrowserRouter>

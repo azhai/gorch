@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/azhai/gorch/internal/config"
+	"github.com/azhai/gorch/internal/web/totp"
 	"github.com/labstack/echo/v4"
 )
 
@@ -76,6 +77,74 @@ func (s *Server) handleLogin(c echo.Context) error {
 	if body.Username != cfg.WEB_USER || body.Password != cfg.WEB_PASS {
 		return c.JSON(http.StatusUnauthorized, errResponse("invalid credentials"))
 	}
+
+	if cfg.TOTP_ENABLE && s.totpStorage != nil {
+		binding, _ := s.totpStorage.GetBinding(body.Username)
+		if binding != nil && binding.Enabled {
+			return c.JSON(http.StatusOK, okResponse(map[string]any{
+				"requireTotp": true,
+				"username":    body.Username,
+			}))
+		}
+	}
+
+	token, err := generateToken(body.Username, []byte(cfg.WEB_PASS))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errResponse("failed to generate token"))
+	}
+
+	return c.JSON(http.StatusOK, okResponse(map[string]string{"token": token}))
+}
+
+func (s *Server) handleLoginTotp(c echo.Context) error {
+	var body struct {
+		Username string `json:"username"`
+		Code     string `json:"code"`
+	}
+
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, errResponse("invalid request body"))
+	}
+
+	cfg := s.supervisor.GetConfig().Web
+
+	if s.totpStorage == nil || s.totpMasterKey == nil {
+		return c.JSON(http.StatusInternalServerError, errResponse("TOTP not configured"))
+	}
+
+	binding, err := s.totpStorage.GetBinding(body.Username)
+	if err != nil || binding == nil || !binding.Enabled {
+		return c.JSON(http.StatusBadRequest, errResponse("TOTP not enabled for user"))
+	}
+
+	if binding.LockedUntil != nil && time.Now().Before(*binding.LockedUntil) {
+		return c.JSON(http.StatusForbidden, errResponse("account locked"))
+	}
+
+	secret, err := totp.DecryptSecret(binding.SecretEnc, s.totpMasterKey)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errResponse("failed to decrypt secret"))
+	}
+
+	valid, window, err := totp.VerifyTOTP(string(secret), body.Code)
+	if err != nil || !valid {
+		newAttempts := binding.FailedAttempts + 1
+		var lockedUntil *time.Time
+		if newAttempts >= 5 {
+			t := time.Now().Add(15 * time.Minute)
+			lockedUntil = &t
+		}
+		s.totpStorage.UpdateFailedAttempts(body.Username, newAttempts, lockedUntil)
+		return c.JSON(http.StatusBadRequest, errResponse("invalid verification code"))
+	}
+
+	used, _ := s.totpStorage.IsCodeUsed(body.Username, window, body.Code)
+	if used {
+		return c.JSON(http.StatusBadRequest, errResponse("code already used"))
+	}
+
+	s.totpStorage.SaveUsedCode(body.Username, window, body.Code)
+	s.totpStorage.UpdateFailedAttempts(body.Username, 0, nil)
 
 	token, err := generateToken(body.Username, []byte(cfg.WEB_PASS))
 	if err != nil {

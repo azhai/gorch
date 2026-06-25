@@ -6,6 +6,8 @@ export default function LoginView() {
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [totpCode, setTotpCode] = useState('')
+  const [step, setStep] = useState<'credentials' | 'totp'>('credentials')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -15,7 +17,7 @@ export default function LoginView() {
     }
   }, [navigate])
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
     if (!username.trim() || !password.trim()) {
@@ -35,9 +37,13 @@ export default function LoginView() {
 
       const json = await res.json()
 
-      if (res.ok && json.success && json.data?.token) {
-        setToken(json.data.token)
-        navigate('/')
+      if (res.ok && json.success) {
+        if (json.data?.requireTotp) {
+          setStep('totp')
+        } else if (json.data?.token) {
+          setToken(json.data.token)
+          navigate('/')
+        }
       } else if (res.status === 401) {
         setError('Invalid username or password')
       } else {
@@ -48,6 +54,45 @@ export default function LoginView() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleTotpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!totpCode.trim() || totpCode.length !== 6) {
+      setError('Please enter 6-digit code')
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+
+    try {
+      const res = await fetch('/api/auth/login/totp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, code: totpCode }),
+      })
+
+      const json = await res.json()
+
+      if (res.ok && json.success && json.data?.token) {
+        setToken(json.data.token)
+        navigate('/')
+      } else {
+        setError(json.message || 'Invalid verification code')
+      }
+    } catch {
+      setError('Network error, please try again')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleBack = () => {
+    setStep('credentials')
+    setTotpCode('')
+    setError(null)
   }
 
   return (
@@ -61,39 +106,76 @@ export default function LoginView() {
           </div>
         )}
 
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-3 py-2 border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm"
-              placeholder="Enter username"
-              disabled={loading}
-            />
-          </div>
+        {step === 'credentials' ? (
+          <form onSubmit={handleCredentialsSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-3 py-2 border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm"
+                placeholder="Enter username"
+                disabled={loading}
+              />
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm"
-              placeholder="Enter password"
-              disabled={loading}
-            />
-          </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3 py-2 border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm"
+                placeholder="Enter password"
+                disabled={loading}
+              />
+            </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2 px-4 bg-macaron-orange/80 hover:bg-macaron-orange text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-          >
-            {loading ? 'Signing in...' : 'Sign in'}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2 px-4 bg-macaron-orange/80 hover:bg-macaron-orange text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+            >
+              {loading ? 'Signing in...' : 'Sign in'}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleTotpSubmit} className="space-y-4">
+            <div className="text-center mb-4">
+              <p className="text-sm text-gray-600">Enter the 6-digit code from your authenticator app</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Verification Code</label>
+              <input
+                type="text"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full px-3 py-2 border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm text-center tracking-widest"
+                placeholder="000000"
+                disabled={loading}
+                maxLength={6}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading || totpCode.length !== 6}
+              className="w-full py-2 px-4 bg-macaron-orange/80 hover:bg-macaron-orange text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+            >
+              {loading ? 'Verifying...' : 'Verify'}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleBack}
+              className="w-full py-2 px-4 text-gray-600 text-sm hover:text-gray-800 transition-colors"
+            >
+              Back
+            </button>
+          </form>
+        )}
       </div>
     </div>
   )

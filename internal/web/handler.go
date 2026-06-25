@@ -300,3 +300,59 @@ func (s *Server) handleValidateCron(c echo.Context) error {
 		"nextRun2": next2.Format(time.RFC3339),
 	}))
 }
+
+func (s *Server) handleTOTPSetup(c echo.Context) error {
+	if s.totpHandler == nil {
+		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
+	}
+	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
+	return s.totpHandler.HandleSetup(c)
+}
+
+func (s *Server) handleTOTPVerifySetup(c echo.Context) error {
+	if s.totpHandler == nil {
+		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
+	}
+	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
+	return s.totpHandler.HandleVerifySetup(c)
+}
+
+func (s *Server) handleTOTPVerify(c echo.Context) error {
+	if s.totpHandler == nil {
+		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
+	}
+	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
+	return s.totpHandler.HandleVerify(c)
+}
+
+func (s *Server) handleTOTPVerifyBackup(c echo.Context) error {
+	if s.totpHandler == nil {
+		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
+	}
+	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
+	return s.totpHandler.HandleVerifyBackup(c)
+}
+
+func (s *Server) handleTOTPDisable(c echo.Context) error {
+	if s.totpHandler == nil {
+		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
+	}
+	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
+	return s.totpHandler.HandleDisable(c)
+}
+
+func (s *Server) handleTOTPStatus(c echo.Context) error {
+	if s.totpHandler == nil {
+		return c.JSON(http.StatusOK, okResponse(map[string]any{"enabled": false, "hasBinding": false}))
+	}
+	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
+	return s.totpHandler.HandleStatus(c)
+}
+
+func (s *Server) handleTOTPRegenerateBackup(c echo.Context) error {
+	if s.totpHandler == nil {
+		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
+	}
+	c.Set("userID", s.supervisor.GetConfig().Web.WEB_USER)
+	return s.totpHandler.HandleRegenerateBackupCodes(c)
+}

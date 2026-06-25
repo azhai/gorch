@@ -222,6 +222,15 @@ func validateAndFillDefaults(cfg *Config, configDir string) error {
 		cfg.Web.WEB_ADDR = "127.0.0.1:8080"
 	}
 
+	if cfg.Web.TOTP_ENABLE {
+		if cfg.Web.TOTP_DB == "" {
+			cfg.Web.TOTP_DB = "/var/lib/gorch/totp.db"
+		}
+		if cfg.Web.TOTP_SECRET == "" {
+			cfg.Web.TOTP_SECRET = os.Getenv("GORCH_TOTP_SECRET")
+		}
+	}
+
 	if cfg.PID_FILE == "" {
 		cfg.PID_FILE = "/var/run/gorch.pid"
 	}
