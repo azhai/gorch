@@ -51,7 +51,12 @@ func StartProcess(ctx context.Context, svc config.ServiceConfig, name string) (*
 		return nil, fmt.Errorf("empty EXEC_CMD for service '%s'", name)
 	}
 
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	// Use exec.Command (not CommandContext) so the child process is NOT killed
+	// when ctx is canceled. The supervisor's ctx is canceled on shutdown, but
+	// managed services should keep running and be stopped explicitly via
+	// stopService. Binding the child to ctx would cause SIGKILL on shutdown,
+	// defeating the purpose of graceful supervision.
+	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = svc.WORK_DIR
 	setProcessGroup(cmd)
 

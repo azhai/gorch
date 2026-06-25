@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/azhai/gorch/internal/config"
@@ -38,7 +37,7 @@ func (s *Server) handleGetServices(c echo.Context) error {
 }
 
 func (s *Server) handleGetService(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	st, ok := s.supervisor.GetStatus(name)
 	if !ok {
 		return c.JSON(http.StatusNotFound, errResponse("service not found: "+name))
@@ -47,7 +46,7 @@ func (s *Server) handleGetService(c echo.Context) error {
 }
 
 func (s *Server) handleStartService(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	if err := s.supervisor.StartService(c.Request().Context(), name); err != nil {
 		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
@@ -55,7 +54,7 @@ func (s *Server) handleStartService(c echo.Context) error {
 }
 
 func (s *Server) handleStopService(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	if err := s.supervisor.StopService(c.Request().Context(), name); err != nil {
 		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
@@ -63,7 +62,7 @@ func (s *Server) handleStopService(c echo.Context) error {
 }
 
 func (s *Server) handleRestartService(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	if err := s.supervisor.RestartService(c.Request().Context(), name); err != nil {
 		return c.JSON(http.StatusOK, errResponse(err.Error()))
 	}
@@ -71,7 +70,7 @@ func (s *Server) handleRestartService(c echo.Context) error {
 }
 
 func (s *Server) handleGetLogs(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	lines := 500
 	if l := c.QueryParam("lines"); l != "" {
 		if v, err := strconv.Atoi(l); err == nil {
@@ -120,7 +119,7 @@ func (s *Server) handleGetLogs(c echo.Context) error {
 }
 
 func (s *Server) handleClearLogs(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	logType := c.QueryParam("type")
 	if logType == "" {
 		logType = "stdout"
@@ -149,7 +148,7 @@ func (s *Server) handleClearLogs(c echo.Context) error {
 }
 
 func (s *Server) handleGetConfig(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	cfg := s.supervisor.GetConfig()
 
 	svc, exists := cfg.Services[name]
@@ -161,7 +160,7 @@ func (s *Server) handleGetConfig(c echo.Context) error {
 }
 
 func (s *Server) handleUpdateConfig(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	slog.Debug("update config", "service", name, "body_len", c.Request().ContentLength)
 
 	cfg := s.supervisor.GetConfig()
@@ -215,7 +214,7 @@ func (s *Server) handleSaveConfigToFile(c echo.Context) error {
 }
 
 func (s *Server) handleGetCronHistory(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 	sched := s.supervisor.GetCronScheduler()
 	history := sched.GetHistory(name)
 	return c.JSON(http.StatusOK, okResponse(history))
@@ -251,7 +250,7 @@ func (s *Server) handleCreateService(c echo.Context) error {
 }
 
 func (s *Server) handleDeleteService(c echo.Context) error {
-	name := strings.Clone(c.Param("name"))
+	name := c.Param("name")
 
 	if err := s.supervisor.DeleteService(name); err != nil {
 		return c.JSON(http.StatusOK, errResponse(err.Error()))

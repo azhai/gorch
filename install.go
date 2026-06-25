@@ -109,7 +109,7 @@ After=network.target
 Type=simple
 ExecStart=%s start -c %s
 Restart=on-failure
-PIDFile=/tmp/gorch.pid
+PIDFile=/var/run/gorch.pid
 
 [Install]
 WantedBy=%s

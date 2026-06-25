@@ -145,13 +145,5 @@ func customHTTPErrorHandler(err error, c echo.Context) {
 
 	slog.Warn("http error", "code", code, "msg", msg, "path", c.Path())
 
-	// Try to return JSON error
-	if c.Request().Header.Get("Accept") == "application/json" ||
-		strings.HasPrefix(c.Path(), "/api/") {
-		c.JSON(code, errResponse(msg))
-		return
-	}
-
-	// Fallback to default HTML error
 	c.JSON(code, errResponse(msg))
 }

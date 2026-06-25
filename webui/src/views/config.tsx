@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'react'
 import { fetchServices, fetchServiceConfig, updateServiceConfig, saveConfigToFile, createService, deleteService, validateCronExpression, ServiceStatus, ServiceConfig } from '../api/client'
 
+const inputClass = 'w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50'
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback
+}
+
 export default function Config() {
   const [services, setServices] = useState<ServiceStatus[]>([])
   const [selected, setSelected] = useState<string>('')
@@ -49,8 +55,8 @@ export default function Config() {
       } else {
         setMessage(res.message || 'Update failed')
       }
-    } catch {
-      setMessage('Network error')
+    } catch (err) {
+      setMessage(errorMessage(err, 'Network error'))
     } finally {
       setSaving(false)
     }
@@ -66,8 +72,8 @@ export default function Config() {
       } else {
         setMessage(res.message || 'Save to file failed')
       }
-    } catch {
-      setMessage('Network error')
+    } catch (err) {
+      setMessage(errorMessage(err, 'Network error'))
     } finally {
       setSaving(false)
     }
@@ -96,8 +102,8 @@ export default function Config() {
       } else {
         setMessage(res.message || 'Create failed')
       }
-    } catch {
-      setMessage('Network error')
+    } catch (err) {
+      setMessage(errorMessage(err, 'Network error'))
     } finally {
       setSaving(false)
     }
@@ -119,8 +125,8 @@ export default function Config() {
       } else {
         setMessage(res.message || 'Delete failed')
       }
-    } catch {
-      setMessage('Network error')
+    } catch (err) {
+      setMessage(errorMessage(err, 'Network error'))
     } finally {
       setSaving(false)
     }
@@ -133,8 +139,8 @@ export default function Config() {
     try {
       const res = await validateCronExpression(config.CRON)
       setCronResult(res)
-    } catch {
-      setCronResult({ valid: false, message: 'Network error' })
+    } catch (err) {
+      setCronResult({ valid: false, message: errorMessage(err, 'Network error') })
     } finally {
       setCronValidating(false)
     }
@@ -176,6 +182,7 @@ export default function Config() {
         <h2 className="text-lg font-semibold text-gray-800">Configuration</h2>
         <select
           value={selected}
+          aria-label="Select service to configure"
           onChange={(e) => {
             setSelected(e.target.value)
             setMessage(null)
@@ -212,6 +219,7 @@ export default function Config() {
             setMessage(null)
           }}
           className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+          aria-label="Create new service"
         >
           + New
         </button>
@@ -219,6 +227,7 @@ export default function Config() {
           <button
             onClick={handleDelete}
             className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
+            aria-label={`Delete service ${selected}`}
           >
             Delete
           </button>
@@ -234,7 +243,7 @@ export default function Config() {
                 type="text"
                 value={creatingName}
                 onChange={(e) => setCreatingName(e.target.value)}
-                className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                className={inputClass}
                 placeholder="e.g. my-service"
               />
             </div>
@@ -245,7 +254,7 @@ export default function Config() {
               type="text"
               value={config.EXEC_CMD}
               onChange={(e) => updateField('EXEC_CMD', e.target.value)}
-              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              className={inputClass}
             />
           </div>
 
@@ -255,7 +264,7 @@ export default function Config() {
               type="text"
               value={config.RESTART_CMD || ''}
               onChange={(e) => updateField('RESTART_CMD', e.target.value)}
-              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              className={inputClass}
               placeholder="e.g. nginx -s reload"
             />
           </div>
@@ -266,7 +275,7 @@ export default function Config() {
               type="text"
               value={config.PID_FILE || ''}
               onChange={(e) => updateField('PID_FILE', e.target.value)}
-              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              className={inputClass}
               placeholder="e.g. /var/run/nginx.pid"
             />
           </div>
@@ -277,7 +286,7 @@ export default function Config() {
               type="text"
               value={config.PRE_ACTION || ''}
               onChange={(e) => updateField('PRE_ACTION', e.target.value)}
-              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              className={inputClass}
               placeholder="e.g. pkill -f myservice"
             />
           </div>
@@ -288,7 +297,7 @@ export default function Config() {
               type="text"
               value={config.WORK_DIR}
               onChange={(e) => updateField('WORK_DIR', e.target.value)}
-              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              className={inputClass}
             />
           </div>
 
@@ -311,7 +320,7 @@ export default function Config() {
                 type="number"
                 value={config.CHECK_PORT || 0}
                 onChange={(e) => updateField('CHECK_PORT', parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                className={inputClass}
                 placeholder="0"
               />
             </div>
@@ -321,7 +330,7 @@ export default function Config() {
                 type="number"
                 value={config.BACK_OFF}
                 onChange={(e) => updateField('BACK_OFF', parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                className={inputClass}
               />
             </div>
           </div>
@@ -333,7 +342,7 @@ export default function Config() {
                 type="text"
                 value={config.STDOUT}
                 onChange={(e) => updateField('STDOUT', e.target.value)}
-                className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                className={inputClass}
               />
             </div>
             <div>
@@ -342,7 +351,7 @@ export default function Config() {
                 type="text"
                 value={config.STDERR}
                 onChange={(e) => updateField('STDERR', e.target.value)}
-                className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+                className={inputClass}
               />
             </div>
           </div>
@@ -381,7 +390,7 @@ export default function Config() {
               type="text"
               value={config.DEPENDS_ON.join(', ')}
               onChange={(e) => updateField('DEPENDS_ON', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
-              className="w-full px-3 py-1.5 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
+              className={inputClass}
               placeholder="comma-separated service names"
             />
           </div>
@@ -416,7 +425,7 @@ export default function Config() {
                     className="flex-1 px-2 py-1 text-sm border border-macaron-peach rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
                     placeholder="value"
                   />
-                  <button onClick={() => removeEnvVar(key)} className="text-xs text-red-700 hover:text-red-900 px-1">x</button>
+                  <button onClick={() => removeEnvVar(key)} className="text-xs text-red-700 hover:text-red-900 px-1" aria-label={`Remove environment variable ${key}`}>x</button>
                 </div>
               ))}
               {Object.keys(config.ENV_VARS).length === 0 && (

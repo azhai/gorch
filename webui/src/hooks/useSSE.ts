@@ -26,25 +26,18 @@ export function useSSE() {
       retryRef.current = 1000
     })
 
-    es.addEventListener('status_change', (event) => {
+    const parseMessage = (type: string) => (event: MessageEvent) => {
       try {
         const msg: SSEMessage = JSON.parse(event.data)
-        msg.type = 'status_change'
+        msg.type = type
         setLastMessage(msg)
       } catch {
-        // ignore
+        // ignore malformed SSE payload
       }
-    })
+    }
 
-    es.addEventListener('uptime_tick', (event) => {
-      try {
-        const msg: SSEMessage = JSON.parse(event.data)
-        msg.type = 'uptime_tick'
-        setLastMessage(msg)
-      } catch {
-        // ignore
-      }
-    })
+    es.addEventListener('status_change', parseMessage('status_change'))
+    es.addEventListener('uptime_tick', parseMessage('uptime_tick'))
 
     es.onerror = () => {
       setConnected(false)

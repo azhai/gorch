@@ -29,8 +29,8 @@ func TestNewSupervisor_Defaults(t *testing.T) {
 	if sup.servicesLockPath != "/var/run/gorch-services.lock" {
 		t.Errorf("default servicesLockPath = %q, want '/var/run/gorch-services.lock'", sup.servicesLockPath)
 	}
-	if sup.socketPath != "/tmp/gorch.sock" {
-		t.Errorf("default socketPath = %q, want '/tmp/gorch.sock'", sup.socketPath)
+	if sup.socketPath != "/var/run/gorch.sock" {
+		t.Errorf("default socketPath = %q, want '/var/run/gorch.sock'", sup.socketPath)
 	}
 	if sup.processes == nil {
 		t.Error("processes map should be initialized")

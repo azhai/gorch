@@ -9,6 +9,7 @@ export default function Logs() {
   const [logType, setLogType] = useState<LogType>('stdout')
   const [logData, setLogData] = useState<LogResponse | null>(null)
   const [clearing, setClearing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchServices().then(setServices)
@@ -25,11 +26,12 @@ export default function Logs() {
   const handleClear = async () => {
     if (!selected) return
     setClearing(true)
+    setError(null)
     try {
       await clearLogs(selected, logType)
       setLogData((prev) => prev ? { ...prev, lines: [] } : null)
-    } catch {
-      // ignore
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to clear logs')
     } finally {
       setClearing(false)
     }
@@ -41,6 +43,7 @@ export default function Logs() {
         <h2 className="text-lg font-semibold text-gray-800">Logs</h2>
         <select
           value={selected}
+          aria-label="Select service to view logs"
           onChange={(e) => setSelected(e.target.value)}
           className="px-3 py-1.5 text-sm border border-macaron-peach rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
         >
@@ -78,6 +81,12 @@ export default function Logs() {
           </button>
         )}
       </div>
+
+      {error && (
+        <div className="mb-2 bg-macaron-rose/30 text-red-700 text-sm rounded-lg px-4 py-2">
+          {error}
+        </div>
+      )}
 
       {logData && logData.logPath && (
         <div className="mb-2 text-xs text-gray-400">

@@ -18,7 +18,7 @@ var (
 	purge       bool
 )
 
-var defaultSocketPath = "/tmp/gorch.sock"
+var defaultSocketPath = "/var/run/gorch.sock"
 
 // setupLogger configures slog level based on GORCH_MODE env var.
 // dev mode → debug level; prod/empty → info level.

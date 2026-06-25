@@ -166,35 +166,12 @@ func readUserPidFile(path string, procStartTime time.Time) int {
 	//  Phase 2: after getting a PID, wait 5s and re-read to verify it hasn't changed
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		info, err := os.Stat(path)
-		if err == nil {
-			mtime := info.ModTime()
-			// Only trust the PID file if it was written after the process started.
-			// Allow 1 second tolerance for fast-starting processes.
-			if mtime.After(procStartTime.Add(-1 * time.Second)) {
-				data, err := os.ReadFile(path)
-				if err == nil {
-					if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
-						slog.Info("readUserPidFile: got candidate PID, verifying", "path", path, "pid", pid)
-						// Got a candidate PID. Wait 5s then re-read to verify.
-						time.Sleep(5 * time.Second)
-						// Re-read and check if PID changed.
-						newPid := tryReadUserPidFile(path)
-						if newPid == pid {
-							// PID unchanged after 5s — trustworthy.
-							slog.Info("readUserPidFile: PID verified, returning", "path", path, "pid", pid)
-							return pid
-						}
-						// PID changed — file is unstable, restart the wait.
-						slog.Info("PID file changed during verification, retrying",
-							"path", path, "oldPid", pid, "newPid", newPid)
-						deadline = time.Now().Add(5 * time.Second)
-						continue
-					}
-				}
-			} else {
-				slog.Debug("PID file mtime too early, waiting", "path", path, "mtime", mtime, "procStartTime", procStartTime)
+		if pid := readFreshPidFile(path, procStartTime); pid > 0 {
+			if verified := verifyPidStable(path, pid); verified > 0 {
+				return verified
 			}
+			// PID changed — file is unstable, restart the wait.
+			deadline = time.Now().Add(5 * time.Second)
 		}
 		if time.Now().After(deadline) {
 			slog.Info("readUserPidFile: deadline exceeded, returning 0", "path", path, "procStartTime", procStartTime)
@@ -202,6 +179,45 @@ func readUserPidFile(path string, procStartTime time.Time) int {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// readFreshPidFile reads a PID from the file only if its mtime is after procStartTime.
+// Returns 0 if the file doesn't exist, is stale, or is invalid.
+func readFreshPidFile(path string, procStartTime time.Time) int {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	// Only trust the PID file if it was written after the process started.
+	// Allow 1 second tolerance for fast-starting processes.
+	if !info.ModTime().After(procStartTime.Add(-1 * time.Second)) {
+		slog.Debug("PID file mtime too early, waiting", "path", path, "mtime", info.ModTime(), "procStartTime", procStartTime)
+		return 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	slog.Info("readUserPidFile: got candidate PID, verifying", "path", path, "pid", pid)
+	return pid
+}
+
+// verifyPidStable waits 5s then re-reads the PID file to confirm the PID hasn't changed.
+// Returns the PID if stable, 0 otherwise.
+func verifyPidStable(path string, pid int) int {
+	time.Sleep(5 * time.Second)
+	newPid := tryReadUserPidFile(path)
+	if newPid == pid {
+		slog.Info("readUserPidFile: PID verified, returning", "path", path, "pid", pid)
+		return pid
+	}
+	slog.Info("PID file changed during verification, retrying",
+		"path", path, "oldPid", pid, "newPid", newPid)
+	return 0
 }
 
 // tryReadUserPidFile reads a PID from a plain text PID file without waiting.
