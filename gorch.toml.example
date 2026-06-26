@@ -4,8 +4,8 @@ LOG_DIR = '/var/log'
 [services.api]
 BACK_OFF = 5
 CRON = "0 */30 * * * *"
-DEPENDS_ON = ["postgres"]
-ENV_VARS = { DEBUG = "true", DATABASE_URL = "postgres://user:pass@localhost:5432/db" }
+DEPENDS_ON = ["redis"]
+ENV_VARS = { DEBUG = "true", REDIS_URL = "redis://localhost:6379/0" }
 EXEC_CMD = "python3 manage.py runserver 0.0.0.0:8000"
 RESTART_POLICY = "on-failure"
 STDOUT = "/var/log/api.out.log"
@@ -22,16 +22,16 @@ WORK_DIR = '/home/ryan/gopath'
 
 [services.nginx]
 DEPENDS_ON = ["api"]
-EXEC_CMD = "nginx"
+EXEC_CMD = "nginx -g 'daemon off;'"
 PID_FILE = "/var/run/nginx.pid"
 RESTART_CMD = "nginx -s reload"
 RESTART_POLICY = "always"
 
-[services.postgres]
+[services.redis]
 BACK_OFF = 3
-EXEC_CMD = "postgres -D /var/lib/postgres"
+EXEC_CMD = "redis-server /etc/redis/redis.conf"
 RESTART_POLICY = "always"
-STDOUT = "/var/log/postgres.log"
+STDOUT = "/var/log/redis.log"
 
 [services.test]
 CRON = "30 */5 9-17 * * *"
