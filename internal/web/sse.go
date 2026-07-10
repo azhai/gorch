@@ -19,12 +19,12 @@ type SSEMessage struct {
 }
 
 type StatusChangePayload struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Pid      int    `json:"pid,omitempty"`
-	Uptime   int64  `json:"uptime,omitempty"`
-	MemoryMB int64  `json:"memoryMB"`
-	ExitCode *int   `json:"exitCode,omitempty"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Pid       int    `json:"pid,omitempty"`
+	MemoryMB  int64  `json:"memoryMB"`
+	StartedAt int64  `json:"startedAt,omitempty"`
+	ExitCode  *int   `json:"exitCode,omitempty"`
 }
 
 type UptimeTickPayload struct {
@@ -32,9 +32,9 @@ type UptimeTickPayload struct {
 }
 
 type UptimeInfo struct {
-	Pid      int   `json:"pid"`
-	Uptime   int64 `json:"uptime"`
-	MemoryMB int64 `json:"memoryMB"`
+	Pid       int   `json:"pid"`
+	MemoryMB  int64 `json:"memoryMB"`
+	StartedAt int64 `json:"startedAt,omitempty"`
 }
 
 type Hub struct {
@@ -108,13 +108,13 @@ func (h *Hub) Stop() {
 	close(h.stopCh)
 }
 
-func (h *Hub) BroadcastStatusChange(name string, status string, pid int, uptime int64, rssMB int64) {
+func (h *Hub) BroadcastStatusChange(name string, status string, pid int, startedAt int64, rssMB int64) {
 	payload, _ := json.Marshal(StatusChangePayload{
-		Name:     name,
-		Status:   status,
-		Pid:      pid,
-		Uptime:   uptime,
-		MemoryMB: rssMB,
+		Name:      name,
+		Status:    status,
+		Pid:       pid,
+		MemoryMB:  rssMB,
+		StartedAt: startedAt,
 	})
 
 	h.broadcast <- SSEMessage{
@@ -129,9 +129,9 @@ func (h *Hub) BroadcastUptimeTick(allStatus map[string]status.ServiceStatus) {
 	for name, st := range allStatus {
 		if st.Status == "running" {
 			uptimes[name] = UptimeInfo{
-				Pid:      st.Pid,
-				Uptime:   st.Uptime,
-				MemoryMB: st.MemoryMB,
+				Pid:       st.Pid,
+				MemoryMB:  st.MemoryMB,
+				StartedAt: st.StartedAt,
 			}
 		}
 	}
@@ -148,13 +148,18 @@ func (h *Hub) BroadcastUptimeTick(allStatus map[string]status.ServiceStatus) {
 }
 
 func (s *Server) handleSSE(c echo.Context) error {
-	// Set SSE headers
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
 	c.Response().Header().Set("X-Accel-Buffering", "no")
 
-	// Enable streaming
+	interval := 5 * time.Second
+	if v := c.QueryParam("interval"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 5*time.Second {
+			interval = d
+		}
+	}
+
 	c.Response().WriteHeader(http.StatusOK)
 	client := newSSEClient()
 	hub := s.supervisor.GetHub()
@@ -164,11 +169,43 @@ func (s *Server) handleSSE(c echo.Context) error {
 		hub.unregister <- client
 	}()
 
-	// Send initial connection event
 	fmt.Fprintf(c.Response(), "event: connected\ndata: {}\n\n")
 	c.Response().Flush()
 
+	now := time.Now()
+	nextTick := now.Truncate(interval).Add(interval)
+	initialSent := false
+
 	ctx := c.Request().Context()
+
+	buildInitialTick := func() SSEMessage {
+		allStatus := s.supervisor.GetAllStatus()
+		uptimes := make(map[string]UptimeInfo, len(allStatus))
+		for name, st := range allStatus {
+			if st.Status == "running" {
+				uptimes[name] = UptimeInfo{
+					Pid:       st.Pid,
+					MemoryMB:  st.MemoryMB,
+					StartedAt: st.StartedAt,
+				}
+			}
+		}
+		payload, _ := json.Marshal(UptimeTickPayload{Services: uptimes})
+		return SSEMessage{
+			Type:      "uptime_tick",
+			Payload:   payload,
+			Timestamp: time.Now().UnixMilli(),
+		}
+	}
+
+	sendMsg := func(msg SSEMessage) {
+		data, _ := json.Marshal(msg)
+		fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", msg.Type, data)
+		c.Response().Flush()
+	}
+
+	sendMsg(buildInitialTick())
+	initialSent = true
 
 	for {
 		select {
@@ -178,9 +215,22 @@ func (s *Server) handleSSE(c echo.Context) error {
 			if !ok {
 				return nil
 			}
-			data, _ := json.Marshal(msg)
-			fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", msg.Type, data)
-			c.Response().Flush()
+			if msg.Type != "uptime_tick" {
+				sendMsg(msg)
+				continue
+			}
+			if !initialSent {
+				sendMsg(msg)
+				initialSent = true
+				nextTick = time.Now().Truncate(interval).Add(interval)
+				continue
+			}
+			now = time.Now()
+			if now.Before(nextTick) {
+				continue
+			}
+			sendMsg(msg)
+			nextTick = now.Truncate(interval).Add(interval)
 		}
 	}
 }

@@ -2,7 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-orange: 245 198 160;
+  --color-peach: 253 220 181;
+  --color-cream: 255 245 230;
+  --color-rose: 248 212 212;
+  --color-mint: 212 240 232;
+  --color-lavender: 228 216 240;
+  --color-sky: 212 232 248;
+}
+
+html.theme-mint {
+  --color-orange: 168 213 186;
+  --color-peach: 197 225 208;
+  --color-cream: 240 247 244;
+  --color-rose: 240 208 208;
+  --color-mint: 186 227 210;
+  --color-lavender: 208 204 224;
+  --color-sky: 204 224 240;
+}
+
+html.theme-pinkblue {
+  --color-orange: 245 198 212;
+  --color-peach: 250 218 228;
+  --color-cream: 248 245 250;
+  --color-rose: 245 198 212;
+  --color-mint: 198 232 220;
+  --color-lavender: 216 198 240;
+  --color-sky: 198 222 245;
+}
+
+html.theme-monet {
+  --color-orange: 196 188 220;
+  --color-peach: 218 212 235;
+  --color-cream: 245 243 248;
+  --color-rose: 228 200 210;
+  --color-mint: 196 220 208;
+  --color-lavender: 196 188 220;
+  --color-sky: 188 208 228;
+}
+
 body {
-  @apply bg-macaron-cream text-gray-700;
+  @apply text-gray-700 dark:text-gray-200;
   font-family: 'Inter', system-ui, sans-serif;
+}
+
+.bg-macaron-cream {
+  background-color: rgb(var(--color-cream));
+}
+
+.dark .bg-macaron-cream {
+  background-color: rgb(17 24 39);
 }

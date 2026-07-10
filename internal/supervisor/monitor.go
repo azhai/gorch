@@ -123,7 +123,7 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 			StartedAt: proc.StartTime.Unix(),
 			MemoryMB:  treeMB,
 		})
-		s.hub.BroadcastStatusChange(name, string(config.StatusRunning), newPid, 0, treeMB)
+		s.hub.BroadcastStatusChange(name, string(config.StatusRunning), newPid, proc.StartTime.Unix(), treeMB)
 		s.mu.Unlock()
 		s.wg.Add(1)
 		go s.monitorAdoptedLoop(ctx, name, svc)

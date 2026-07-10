@@ -292,7 +292,7 @@ func (s *Supervisor) RestartService(ctx context.Context, name string) error {
 				StartedAt: proc.StartTime.Unix(),
 				MemoryMB:  treeMB,
 			})
-			s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, treeMB)
+			s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, proc.StartTime.Unix(), treeMB)
 		}
 		return nil
 	}
@@ -557,7 +557,7 @@ func (s *Supervisor) startService(ctx context.Context, name string, svc config.S
 					StartedAt: proc.StartTime.Unix(),
 					MemoryMB:  treeMB,
 				})
-				s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, treeMB)
+				s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, proc.StartTime.Unix(), treeMB)
 				s.wg.Add(1)
 				go s.monitorAdoptedLoop(ctx, name, svc)
 				// Write per-service PID file for consistency
@@ -612,7 +612,7 @@ func (s *Supervisor) startService(ctx context.Context, name string, svc config.S
 		StartedAt: proc.StartTime.Unix(),
 		MemoryMB:  treeMB,
 	})
-	s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, 0, treeMB)
+	s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, proc.StartTime.Unix(), treeMB)
 
 	if proc.Adopted {
 		s.wg.Add(1)

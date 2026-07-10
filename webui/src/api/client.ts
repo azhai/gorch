@@ -5,9 +5,9 @@ export interface ServiceStatus {
   name: string
   status: string
   pid: number
-  uptime: number
   memoryMB: number
   exitCode: number | null
+  startedAt: number
 }
 
 export interface LogResponse {

@@ -9,6 +9,7 @@ import {
   TOTPStatus,
 
 } from '../api/client'
+import { useI18n } from '../i18n/I18nProvider'
 
 export default function TOTPSettings() {
   const [status, setStatus] = useState<TOTPStatus | null>(null)
@@ -17,6 +18,7 @@ export default function TOTPSettings() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const { t } = useI18n()
 
   useEffect(() => {
     loadStatus()
@@ -32,7 +34,7 @@ export default function TOTPSettings() {
         setStatus({ enabled: false, backupCodes: 0, hasBinding: false })
       }
     } catch (e) {
-      setError('Failed to load TOTP status')
+      setError(t('totp.failedLoad'))
     } finally {
       setLoading(false)
     }
@@ -47,10 +49,10 @@ export default function TOTPSettings() {
       if (res.success && res.data) {
         setSetupData(res.data)
       } else {
-        setError(res.message || 'Setup failed')
+        setError(res.message || t('totp.setupFailed'))
       }
     } catch (e) {
-      setError('Failed to start TOTP setup')
+      setError(t('totp.failedSetup'))
     } finally {
       setLoading(false)
     }
@@ -58,7 +60,7 @@ export default function TOTPSettings() {
 
   async function handleVerifySetup() {
     if (!verifyCode) {
-      setError('Please enter verification code')
+      setError(t('totp.enterCode'))
       return
     }
     setLoading(true)
@@ -66,22 +68,22 @@ export default function TOTPSettings() {
     try {
       const res = await totpVerifySetup(verifyCode)
       if (res.success) {
-        setSuccess('TOTP enabled successfully')
+        setSuccess(t('totp.enabledSuccess'))
         setSetupData(null)
         setVerifyCode('')
         loadStatus()
       } else {
-        setError(res.message || 'Verification failed')
+        setError(res.message || t('totp.verifyFailed'))
       }
     } catch (e) {
-      setError('Failed to verify code')
+      setError(t('totp.failedVerify'))
     } finally {
       setLoading(false)
     }
   }
 
   async function handleDisable() {
-    if (!confirm('Are you sure you want to disable TOTP? This will reduce account security.')) {
+    if (!confirm(t('totp.disableConfirm'))) {
       return
     }
     setLoading(true)
@@ -89,20 +91,20 @@ export default function TOTPSettings() {
     try {
       const res = await totpDisable()
       if (res.success) {
-        setSuccess('TOTP disabled')
+        setSuccess(t('totp.disabledSuccess'))
         loadStatus()
       } else {
-        setError(res.message || 'Failed to disable TOTP')
+        setError(res.message || t('totp.failedDisable'))
       }
     } catch (e) {
-      setError('Failed to disable TOTP')
+      setError(t('totp.failedDisable'))
     } finally {
       setLoading(false)
     }
   }
 
   async function handleRegenerateBackupCodes() {
-    if (!confirm('Regenerating backup codes will invalidate existing ones. Continue?')) {
+    if (!confirm(t('totp.regenerateConfirm'))) {
       return
     }
     setLoading(true)
@@ -111,13 +113,13 @@ export default function TOTPSettings() {
       const res = await totpRegenerateBackupCodes()
       if (res.success && res.data) {
         setSetupData({ ...setupData!, backupCodes: res.data.backupCodes })
-        setSuccess('New backup codes generated')
+        setSuccess(t('totp.regenerated'))
         loadStatus()
       } else {
-        setError(res.message || 'Failed to regenerate backup codes')
+        setError(res.message || t('totp.failedRegenerate'))
       }
     } catch (e) {
-      setError('Failed to regenerate backup codes')
+      setError(t('totp.failedRegenerate'))
     } finally {
       setLoading(false)
     }
@@ -125,58 +127,58 @@ export default function TOTPSettings() {
 
   return (
     <div className="max-w-2xl mx-auto">
-      <h2 className="text-2xl font-semibold text-gray-800 mb-6">Two-Factor Authentication</h2>
+      <h2 className="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-6">{t('totp.title')}</h2>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-red-700 dark:text-red-300 text-sm">
           {error}
         </div>
       )}
 
       {success && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded text-green-700 text-sm">
+        <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded text-green-700 dark:text-green-300 text-sm">
           {success}
         </div>
       )}
 
       {loading && !setupData && (
-        <div className="text-gray-500 text-sm">Loading...</div>
+        <div className="text-gray-500 dark:text-gray-400 text-sm">{t('totp.loading')}</div>
       )}
 
       {!loading && !setupData && status && (
         <div className="space-y-4">
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
             <div className="flex items-center justify-between">
               <div>
-                <div className="font-medium text-gray-800">Status</div>
-                <div className="text-sm text-gray-500 mt-1">
-                  {status.enabled ? 'TOTP is enabled' : 'TOTP is not enabled'}
+                <div className="font-medium text-gray-800 dark:text-gray-100">{t('totp.status')}</div>
+                <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                  {status.enabled ? t('totp.enabled') : t('totp.notEnabled')}
                 </div>
               </div>
               <span
                 className={`px-2 py-1 rounded text-xs font-medium ${
                   status.enabled
-                    ? 'bg-green-100 text-green-700'
-                    : 'bg-gray-100 text-gray-600'
+                    ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                    : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
                 }`}
               >
-                {status.enabled ? 'Enabled' : 'Disabled'}
+                {status.enabled ? t('totp.enabledBadge') : t('totp.disabledBadge')}
               </span>
             </div>
           </div>
 
           {status.enabled && (
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <div className="font-medium text-gray-800 mb-2">Backup Codes</div>
-              <div className="text-sm text-gray-500 mb-3">
-                {status.backupCodes} unused backup codes remaining
+            <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+              <div className="font-medium text-gray-800 dark:text-gray-100 mb-2">{t('totp.backupCodes')}</div>
+              <div className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+                {t('totp.backupRemaining', { count: status.backupCodes })}
               </div>
               <button
                 onClick={handleRegenerateBackupCodes}
                 disabled={loading}
-                className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded transition disabled:opacity-50"
+                className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition disabled:opacity-50 text-gray-700 dark:text-gray-200"
               >
-                Regenerate Backup Codes
+                {t('totp.regenerate')}
               </button>
             </div>
           )}
@@ -188,7 +190,7 @@ export default function TOTPSettings() {
                 disabled={loading}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition disabled:opacity-50"
               >
-                Enable TOTP
+                {t('totp.enable')}
               </button>
             )}
             {status.enabled && (
@@ -197,7 +199,7 @@ export default function TOTPSettings() {
                 disabled={loading}
                 className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded transition disabled:opacity-50"
               >
-                Disable TOTP
+                {t('totp.disable')}
               </button>
             )}
           </div>
@@ -206,37 +208,37 @@ export default function TOTPSettings() {
 
       {setupData && (
         <div className="space-y-6">
-          <div className="bg-white rounded-lg border border-gray-200 p-6">
-            <h3 className="font-medium text-gray-800 mb-4">Scan QR Code</h3>
+          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.scanQr')}</h3>
             <div className="flex flex-col items-center gap-4">
               <img
                 src={setupData.qrCode}
                 alt="TOTP QR Code"
-                className="w-48 h-48 border border-gray-200 rounded"
+                className="w-48 h-48 border border-gray-200 dark:border-gray-600 rounded"
               />
-              <div className="text-xs text-gray-500 text-center">
-                Scan with Google Authenticator, Authy, or similar app
+              <div className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                {t('totp.scanQrHelp')}
               </div>
             </div>
           </div>
 
-          <div className="bg-white rounded-lg border border-gray-200 p-6">
-            <h3 className="font-medium text-gray-800 mb-4">Manual Entry</h3>
-            <div className="bg-gray-50 p-3 rounded font-mono text-sm break-all">
+          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.manualEntry')}</h3>
+            <div className="bg-gray-50 dark:bg-gray-700 p-3 rounded font-mono text-sm break-all text-gray-800 dark:text-gray-200">
               {setupData.secret}
             </div>
           </div>
 
-          <div className="bg-white rounded-lg border border-gray-200 p-6">
-            <h3 className="font-medium text-gray-800 mb-4">Backup Codes</h3>
-            <div className="text-sm text-gray-500 mb-3">
-              Save these codes in a secure location. Each can be used once if you lose access to your authenticator.
+          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.backupCodes')}</h3>
+            <div className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+              {t('totp.backupSaveHint')}
             </div>
             <div className="grid grid-cols-2 gap-2">
               {setupData.backupCodes.map((code, i) => (
                 <div
                   key={i}
-                  className="bg-gray-50 p-2 rounded font-mono text-sm text-center"
+                  className="bg-gray-50 dark:bg-gray-700 p-2 rounded font-mono text-sm text-center text-gray-800 dark:text-gray-200"
                 >
                   {code}
                 </div>
@@ -244,10 +246,10 @@ export default function TOTPSettings() {
             </div>
           </div>
 
-          <div className="bg-white rounded-lg border border-gray-200 p-6">
-            <h3 className="font-medium text-gray-800 mb-4">Verify Setup</h3>
-            <div className="text-sm text-gray-500 mb-3">
-              Enter the 6-digit code from your authenticator app to complete setup
+          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.verifySetup')}</h3>
+            <div className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+              {t('totp.verifySetupHelp')}
             </div>
             <div className="flex gap-3">
               <input
@@ -255,7 +257,7 @@ export default function TOTPSettings() {
                 value={verifyCode}
                 onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 placeholder="000000"
-                className="flex-1 px-3 py-2 border border-gray-200 rounded text-center font-mono text-lg tracking-widest"
+                className="flex-1 px-3 py-2 border border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded text-center font-mono text-lg tracking-widest"
                 maxLength={6}
               />
               <button
@@ -263,7 +265,7 @@ export default function TOTPSettings() {
                 disabled={loading || verifyCode.length !== 6}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition disabled:opacity-50"
               >
-                Verify
+                {t('totp.verifyButton')}
               </button>
             </div>
           </div>
@@ -273,9 +275,9 @@ export default function TOTPSettings() {
               setSetupData(null)
               setVerifyCode('')
             }}
-            className="text-sm text-gray-500 hover:text-gray-700"
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
           >
-            Cancel Setup
+            {t('totp.cancelSetup')}
           </button>
         </div>
       )}

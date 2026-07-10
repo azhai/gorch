@@ -8,17 +8,18 @@ interface SSEMessage {
   timestamp: number
 }
 
-export function useSSE() {
+export function useSSE(interval: string = '5s') {
   const [connected, setConnected] = useState(false)
   const [lastMessage, setLastMessage] = useState<SSEMessage | null>(null)
   const esRef = useRef<EventSource | null>(null)
   const retryRef = useRef(1000)
+  const intervalRef = useRef(interval)
 
   const connect = useCallback(() => {
     const token = getToken()
     if (!token) return
 
-    const url = `${API_BASE}/events?token=${encodeURIComponent(token)}`
+    const url = `${API_BASE}/events?token=${encodeURIComponent(token)}&interval=${encodeURIComponent(intervalRef.current)}`
     const es = new EventSource(url)
     esRef.current = es
 
@@ -50,11 +51,17 @@ export function useSSE() {
   }, [])
 
   useEffect(() => {
+    intervalRef.current = interval
+    if (esRef.current) {
+      esRef.current.close()
+      esRef.current = null
+      retryRef.current = 1000
+    }
     connect()
     return () => {
       esRef.current?.close()
     }
-  }, [connect])
+  }, [interval, connect])
 
   return { connected, lastMessage }
 }
