@@ -6,7 +6,7 @@ import Config from './views/config'
 import TOTPSettings from './views/totp'
 import LoginView from './views/login'
 import AuthGuard from './components/authGuard'
-import { useSSE } from './hooks/useSSE'
+import { useSSE, SSEProvider } from './hooks/useSSE'
 import { isAuthEnabled, getToken, removeToken } from './api/authStore'
 import { ROUTER_BASENAME, STATIC_PREFIX } from './api/config'
 import { I18nProvider, useI18n } from './i18n/I18nProvider'
@@ -125,7 +125,9 @@ function RootApp() {
             <Route
               element={
                 <AuthGuard>
-                  <AppLayout />
+                  <SSEProvider>
+                    <AppLayout />
+                  </SSEProvider>
                 </AuthGuard>
               }
             >

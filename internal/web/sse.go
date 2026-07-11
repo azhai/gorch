@@ -38,29 +38,32 @@ type UptimeInfo struct {
 }
 
 type Hub struct {
-	clients    map[*sseClient]bool
-	broadcast  chan SSEMessage
-	register   chan *sseClient
-	unregister chan *sseClient
-	mu         sync.RWMutex
-	stopCh     chan struct{}
+	clients     map[*sseClient]bool
+	clientsByID map[string]*sseClient
+	broadcast   chan SSEMessage
+	register    chan *sseClient
+	unregister  chan *sseClient
+	mu          sync.RWMutex
+	stopCh      chan struct{}
 }
 
 type sseClient struct {
+	id string
 	ch chan SSEMessage
 }
 
-func newSSEClient() *sseClient {
-	return &sseClient{ch: make(chan SSEMessage, 64)}
+func newSSEClient(id string) *sseClient {
+	return &sseClient{id: id, ch: make(chan SSEMessage, 64)}
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[*sseClient]bool),
-		broadcast:  make(chan SSEMessage, 256),
-		register:   make(chan *sseClient),
-		unregister: make(chan *sseClient),
-		stopCh:     make(chan struct{}),
+		clients:     make(map[*sseClient]bool),
+		clientsByID: make(map[string]*sseClient),
+		broadcast:   make(chan SSEMessage, 256),
+		register:    make(chan *sseClient),
+		unregister:  make(chan *sseClient),
+		stopCh:      make(chan struct{}),
 	}
 }
 
@@ -72,23 +75,36 @@ func (h *Hub) Run() {
 			for client := range h.clients {
 				close(client.ch)
 			}
+			h.clientsByID = make(map[string]*sseClient)
 			h.mu.Unlock()
 			return
 
 		case client := <-h.register:
 			h.mu.Lock()
+			if existing, ok := h.clientsByID[client.id]; ok {
+				select {
+				case existing.ch <- SSEMessage{Type: "replaced"}:
+				default:
+				}
+				delete(h.clients, existing)
+				close(existing.ch)
+			}
 			h.clients[client] = true
+			h.clientsByID[client.id] = client
 			h.mu.Unlock()
-			slog.Debug("sse client connected", "total", len(h.clients))
+			slog.Debug("sse client connected", "id", client.id, "total", len(h.clients))
 
 		case client := <-h.unregister:
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
+				if existing, ok := h.clientsByID[client.id]; ok && existing == client {
+					delete(h.clientsByID, client.id)
+				}
 				close(client.ch)
 			}
 			h.mu.Unlock()
-			slog.Debug("sse client disconnected", "total", len(h.clients))
+			slog.Debug("sse client disconnected", "id", client.id, "total", len(h.clients))
 
 		case msg := <-h.broadcast:
 			h.mu.RLock()
@@ -96,7 +112,6 @@ func (h *Hub) Run() {
 				select {
 				case client.ch <- msg:
 				default:
-					// client too slow, skip
 				}
 			}
 			h.mu.RUnlock()
@@ -161,7 +176,11 @@ func (s *Server) handleSSE(c echo.Context) error {
 	}
 
 	c.Response().WriteHeader(http.StatusOK)
-	client := newSSEClient()
+	clientID := c.QueryParam("token")
+	if clientID == "" {
+		clientID = c.Request().RemoteAddr
+	}
+	client := newSSEClient(clientID)
 	hub := s.supervisor.GetHub()
 	hub.register <- client
 
@@ -213,6 +232,10 @@ func (s *Server) handleSSE(c echo.Context) error {
 			return nil
 		case msg, ok := <-client.ch:
 			if !ok {
+				return nil
+			}
+			if msg.Type == "replaced" {
+				sendMsg(msg)
 				return nil
 			}
 			if msg.Type != "uptime_tick" {

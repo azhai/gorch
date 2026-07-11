@@ -13,11 +13,10 @@ const SSE_INTERVAL_OPTIONS = [
 
 export default function Dashboard() {
   const [services, setServices] = useState<ServiceStatus[]>([])
-  const [sseInterval, setSseInterval] = useState('5s')
   const [uptimeMode, setUptimeMode] = useState<'elapsed' | 'start'>('elapsed')
   const [, setTick] = useState(0)
   const { showToast, toast } = useToast()
-  const { lastMessage } = useSSE(sseInterval)
+  const { lastMessage, interval, setInterval: setSseInterval } = useSSE()
   const { t } = useI18n()
 
   const loadServices = useCallback(async () => {
@@ -98,9 +97,9 @@ export default function Dashboard() {
             <label htmlFor="sse-interval" className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
               {t('dashboard.duration')}
             </label>
-            <select
+              <select
               id="sse-interval"
-              value={sseInterval}
+              value={interval}
               onChange={(e) => setSseInterval(e.target.value)}
               className="text-xs border border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-macaron-peach"
             >
