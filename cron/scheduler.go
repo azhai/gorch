@@ -76,6 +76,11 @@ func (s *Scheduler) Start() {
 	s.cron.Start()
 }
 
+// JobCount returns the number of registered cron jobs (entries).
+func (s *Scheduler) JobCount() int {
+	return len(s.cron.Entries())
+}
+
 func (s *Scheduler) Stop() {
 	ctx := s.cron.Stop()
 	<-ctx.Done()

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/azhai/go-totp"
-	"github.com/azhai/gorch/internal/config"
+	"github.com/azhai/gorch/config"
 	"github.com/labstack/echo/v4"
 )
 

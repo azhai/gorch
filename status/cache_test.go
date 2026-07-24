@@ -3,7 +3,7 @@ package status
 import (
 	"testing"
 
-	"github.com/azhai/gorch/internal/config"
+	"github.com/azhai/gorch/config"
 )
 
 // ── Test Cache CRUD ──────────────────────────────────────

@@ -9,9 +9,9 @@ import (
 
 	gototp "github.com/azhai/go-totp"
 	"github.com/azhai/gobus/log"
-	"github.com/azhai/gorch/internal/config"
-	"github.com/azhai/gorch/internal/cron"
-	"github.com/azhai/gorch/internal/status"
+	"github.com/azhai/gorch/config"
+	"github.com/azhai/gorch/cron"
+	"github.com/azhai/gorch/status"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )

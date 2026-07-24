@@ -21,6 +21,7 @@ type ServiceConfig struct {
 	STDERR         string            `toml:"STDERR"`
 	DEPENDS_ON     []string          `toml:"DEPENDS_ON"`
 	CRON           string            `toml:"CRON"`
+	CRON_TIMEOUT   int               `toml:"CRON_TIMEOUT"`
 	ENV_VARS       map[string]string `toml:"ENV_VARS"`
 	PID_FILE       string            `toml:"PID_FILE"`
 }

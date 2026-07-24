@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/azhai/gorch/internal/common"
+	"github.com/azhai/gorch/common"
 	"github.com/labstack/echo/v4"
 )
 

@@ -1,7 +1,7 @@
 package status
 
 import (
-	"github.com/azhai/gorch/internal/config"
+	"github.com/azhai/gorch/config"
 )
 
 type ServiceStatus struct {

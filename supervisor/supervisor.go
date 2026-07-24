@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/azhai/gobus/log"
-	"github.com/azhai/gorch/internal/config"
-	"github.com/azhai/gorch/internal/cron"
-	"github.com/azhai/gorch/internal/ipc"
-	"github.com/azhai/gorch/internal/status"
-	"github.com/azhai/gorch/internal/web"
+	"github.com/azhai/gorch/config"
+	"github.com/azhai/gorch/cron"
+	"github.com/azhai/gorch/ipc"
+	"github.com/azhai/gorch/status"
+	"github.com/azhai/gorch/web"
 )
 
 const maxRestartCount = 3
@@ -24,6 +24,7 @@ type Supervisor struct {
 	processes        map[string]*ProcessInfo
 	mu               sync.RWMutex
 	cronSched        *cron.Scheduler
+	cronProcs        map[string]*ProcessInfo // one-shot cron task processes, tracked separately from supervised services
 	logMgr           *log.Manager
 	statusCache      *status.Cache
 	webServer        *web.Server
@@ -61,6 +62,7 @@ func NewSupervisor(cfg *config.Config, opts ...Option) *Supervisor {
 		cfg:              cfg,
 		processes:        make(map[string]*ProcessInfo),
 		cronSched:        cron.NewScheduler(),
+		cronProcs:        make(map[string]*ProcessInfo),
 		statusCache:      status.NewCache(),
 		pidPath:          "/var/run/gorch.pid",
 		servicesLockPath: "/var/run/gorch-services.lock",
@@ -123,6 +125,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 
 	s.cronSched.Start()
+	slog.Info("cron scheduler started", "jobs", s.cronSched.JobCount())
 
 	if s.cfg.Web.WEB_ENABLE {
 		s.webServer = web.NewServer(s.cfg.Web.WEB_ADDR, s)
@@ -195,6 +198,16 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	s.writeServicesLock()
 
 	s.cronSched.Stop()
+
+	// Kill any in-flight one-shot cron tasks so they don't linger after shutdown.
+	s.mu.Lock()
+	for name, proc := range s.cronProcs {
+		s.mu.Unlock()
+		_ = StopProcess(proc, 5*time.Second)
+		s.mu.Lock()
+		delete(s.cronProcs, name)
+	}
+	s.mu.Unlock()
 
 	order := s.cfg.TopologicalOrder()
 	for i := len(order) - 1; i >= 0; i-- {
@@ -649,62 +662,143 @@ func (s *Supervisor) stopService(name string) error {
 }
 
 func (s *Supervisor) registerCronJob(name string, svc config.ServiceConfig) error {
-	return s.cronSched.AddJob(name, svc.CRON, "", func() {
-		slog.Info("cron triggered", "service", name, "command", svc.EXEC_CMD, "cron_expr", svc.CRON)
-		s.mu.Lock()
-		defer s.mu.Unlock()
+	slog.Info("registering cron job", "service", name, "expression", svc.CRON)
+	if err := s.cronSched.AddJob(name, svc.CRON, "", s.makeCronFn(name, svc)); err != nil {
+		return err
+	}
+	slog.Info("registered cron job", "service", name, "expression", svc.CRON)
+	return nil
+}
 
-		if _, running := s.processes[name]; running {
-			slog.Warn("cron overlap detected, skipping", "service", name)
+// makeCronFn returns the function executed when a cron schedule fires.
+// It ONLY triggers the service; the process lifecycle (status tracking, restart
+// policy and exit handling) is owned by the supervisor's monitor loop.
+//
+// The previous implementation blocked here while waiting for the process to exit
+// and also waited on the very same *os.Process that the monitor loop watches.
+// Because the two Wait() calls raced, the monitor loop usually consumed the exit
+// event, leaving this function stuck on <-exitCh forever. That held supervisor.s.mu
+// and left cron's internal "running" flag permanently true, so every subsequent
+// trigger was silently skipped as an "overlap". We now return immediately and let
+// the monitor loop do the bookkeeping.
+// makeCronFn returns the function executed when a cron schedule fires.
+//
+// Cron tasks are ONE-SHOT: the process is started and tracked independently from
+// the long-running supervised services (in s.cronProcs, NOT s.processes). It is
+// cleaned up as soon as the process exits, or when it overruns CRON_TIMEOUT. It
+// does NOT go through the restart/daemonize machinery — a process that daemonizes
+// or otherwise lingers can no longer pin the slot forever and block future
+// triggers (the original bug: the process "finished" but never exited, so the
+// next trigger was always skipped as an "overlap").
+func (s *Supervisor) makeCronFn(name string, svc config.ServiceConfig) func() {
+	return func() {
+		slog.Info("cron triggered", "service", name, "command", svc.EXEC_CMD, "cron_expr", svc.CRON)
+
+		s.mu.Lock()
+		if old, ok := s.cronProcs[name]; ok && processAlive(old) {
+			s.mu.Unlock()
 			s.cronSched.RecordExecution(name, cron.CronExecutionRecord{
 				Service:   name,
 				StartedAt: time.Now(),
 				Status:    "overlap",
 			})
+			slog.Warn("cron overlap detected, skipping", "service", name)
 			return
 		}
+		s.mu.Unlock()
 
 		ctx := context.Background()
-		slog.Info("cron starting service", "service", name, "command", svc.EXEC_CMD)
-		if err := s.startService(ctx, name, svc); err != nil {
-			slog.Error("cron start failed", "service", name, "error", err, "command", svc.EXEC_CMD)
+		proc, err := StartProcess(ctx, svc, name)
+		if err != nil {
 			s.cronSched.RecordExecution(name, cron.CronExecutionRecord{
 				Service:   name,
 				StartedAt: time.Now(),
 				Status:    "failed",
 			})
+			slog.Error("cron start failed", "service", name, "error", err, "command", svc.EXEC_CMD)
 			return
 		}
 
-		proc := s.processes[name]
+		s.mu.Lock()
+		s.cronProcs[name] = proc
+		treeMB := getProcessTreeMemoryMB(proc.Pid)
+		s.mu.Unlock()
+		s.statusCache.Update(name, status.ServiceStatus{
+			Name:      name,
+			Status:    config.StatusRunning,
+			Pid:       proc.Pid,
+			StartedAt: proc.StartTime.Unix(),
+			MemoryMB:  treeMB,
+		})
+		s.hub.BroadcastStatusChange(name, string(config.StatusRunning), proc.Pid, proc.StartTime.Unix(), treeMB)
+
+		s.cronSched.RecordExecution(name, cron.CronExecutionRecord{
+			Service:   name,
+			StartedAt: time.Now(),
+			Status:    "started",
+			Pid:       proc.Pid,
+		})
 		slog.Info("cron service started", "service", name, "pid", proc.Pid)
 
-		exitCh, _ := MonitorProcess(proc)
-		exitCode := <-exitCh
+		go s.waitCronProc(name, proc, svc)
+	}
+}
 
-		now := time.Now()
-		record := cron.CronExecutionRecord{
-			Service:   name,
-			StartedAt: proc.StartTime,
-			EndedAt:   &now,
-			ExitCode:  &exitCode,
-			Status:    "success",
-			Pid:       proc.Pid,
-		}
-		if exitCode != 0 {
-			record.Status = "failed"
-			slog.Error("cron service exited with error", "service", name, "exitCode", exitCode, "pid", proc.Pid)
-		} else {
-			slog.Info("cron service completed successfully", "service", name, "exitCode", exitCode, "pid", proc.Pid)
-		}
-		s.cronSched.RecordExecution(name, record)
+// processAlive reports whether the given process is still running.
+func processAlive(proc *ProcessInfo) bool {
+	if proc == nil {
+		return false
+	}
+	if proc.Cmd != nil && proc.Cmd.Process != nil {
+		return proc.Cmd.Process.Signal(syscall.Signal(0)) == nil
+	}
+	return false
+}
 
-		delete(s.processes, name)
-		s.statusCache.Update(name, status.ServiceStatus{
-			Name:   name,
-			Status: config.StatusStopped,
-		})
+// waitCronProc waits for a one-shot cron task to finish and then removes it from
+// s.cronProcs so the next trigger may run. If CRON_TIMEOUT > 0 and the task
+// overruns that duration, the process is killed to avoid pinning the slot
+// indefinitely (e.g. a command that completes its work but does not exit).
+func (s *Supervisor) waitCronProc(name string, proc *ProcessInfo, svc config.ServiceConfig) {
+	exitCh, err := MonitorProcess(proc)
+	if err != nil {
+		s.mu.Lock()
+		delete(s.cronProcs, name)
+		s.mu.Unlock()
+		slog.Error("cron monitor setup failed", "service", name, "error", err)
+		return
+	}
+
+	timeout := time.Duration(svc.CRON_TIMEOUT) * time.Second
+	var exitCode int
+	if timeout > 0 {
+		select {
+		case exitCode = <-exitCh:
+		case <-time.After(timeout):
+			slog.Warn("cron task timed out, killing", "service", name, "timeout", svc.CRON_TIMEOUT)
+			_ = StopProcess(proc, 5*time.Second)
+			exitCode = -1
+		}
+	} else {
+		exitCode = <-exitCh
+	}
+
+	s.mu.Lock()
+	delete(s.cronProcs, name)
+	s.mu.Unlock()
+
+	proc.CloseFiles()
+	finalStatus := config.StatusStopped
+	if exitCode != 0 {
+		finalStatus = config.StatusFailed
+	}
+	s.statusCache.Update(name, status.ServiceStatus{
+		Name:     name,
+		Status:   finalStatus,
+		ExitCode: &exitCode,
 	})
+	s.hub.BroadcastStatusChange(name, string(finalStatus), 0, 0, 0)
+	slog.Info("cron task finished", "service", name, "exitCode", exitCode)
 }
 
 func (s *Supervisor) HandleReload() error {
@@ -727,6 +821,32 @@ func (s *Supervisor) HandleReload() error {
 
 	s.cfg = newCfg
 	slog.Info("config reloaded")
+
+	// Rebuild the cron scheduler so any changes to CRON schedules take effect.
+	if err := s.rebuildCronScheduler(); err != nil {
+		return fmt.Errorf("failed to reload cron schedules: %w", err)
+	}
+	return nil
+}
+
+// rebuildCronScheduler stops the running scheduler and re-registers every cron
+// job from the current configuration. It must be called with s.mu held.
+func (s *Supervisor) rebuildCronScheduler() error {
+	if s.cronSched != nil {
+		s.cronSched.Stop()
+	}
+	newSched := cron.NewScheduler()
+	for name, svc := range s.cfg.Services {
+		if svc.CRON == "" {
+			continue
+		}
+		if err := newSched.AddJob(name, svc.CRON, "", s.makeCronFn(name, svc)); err != nil {
+			return fmt.Errorf("failed to register cron for '%s': %w", name, err)
+		}
+		slog.Info("registered cron job", "service", name, "expression", svc.CRON)
+	}
+	s.cronSched = newSched
+	newSched.Start()
 	return nil
 }
 

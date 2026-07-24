@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/azhai/gorch/internal/config"
-	"github.com/azhai/gorch/internal/ipc"
+	"github.com/azhai/gorch/config"
+	"github.com/azhai/gorch/ipc"
 )
 
 // ── Test NewSupervisor with options ───────────────────────

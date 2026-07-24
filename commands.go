@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/azhai/gorch/internal/common"
-	"github.com/azhai/gorch/internal/config"
-	"github.com/azhai/gorch/internal/ipc"
-	"github.com/azhai/gorch/internal/supervisor"
+	"github.com/azhai/gorch/common"
+	"github.com/azhai/gorch/config"
+	"github.com/azhai/gorch/ipc"
+	"github.com/azhai/gorch/supervisor"
 	"github.com/spf13/cobra"
 )
 

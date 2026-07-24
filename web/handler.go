@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/azhai/gorch/internal/config"
+	"github.com/azhai/gorch/config"
 	"github.com/labstack/echo/v4"
 	"github.com/robfig/cron/v3"
 )

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/azhai/gorch/internal/config"
+	"github.com/azhai/gorch/config"
 )
 
 type Cache struct {

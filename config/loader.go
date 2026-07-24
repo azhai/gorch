@@ -110,6 +110,9 @@ func cleanServiceConfig(svc ServiceConfig, configDir string) map[string]any {
 	if svc.CRON != "" {
 		clean["CRON"] = svc.CRON
 	}
+	if svc.CRON_TIMEOUT > 0 {
+		clean["CRON_TIMEOUT"] = svc.CRON_TIMEOUT
+	}
 	if svc.PID_FILE != "" {
 		clean["PID_FILE"] = svc.PID_FILE
 	}

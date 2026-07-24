@@ -7,8 +7,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/azhai/gorch/internal/config"
-	"github.com/azhai/gorch/internal/status"
+	"github.com/azhai/gorch/config"
+	"github.com/azhai/gorch/status"
 )
 
 // detectDaemonize waits briefly after process start to detect if the process

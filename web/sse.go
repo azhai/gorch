@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/azhai/gorch/internal/status"
+	"github.com/azhai/gorch/status"
 	"github.com/labstack/echo/v4"
 )
 
@@ -45,6 +45,7 @@ type Hub struct {
 	unregister  chan *sseClient
 	mu          sync.RWMutex
 	stopCh      chan struct{}
+	stopOnce    sync.Once
 }
 
 type sseClient struct {
@@ -120,7 +121,12 @@ func (h *Hub) Run() {
 }
 
 func (h *Hub) Stop() {
-	close(h.stopCh)
+	// Guard with sync.Once: Supervisor.Stop may be invoked more than once
+	// (e.g. on shutdown while a previous stop is still in flight), and
+	// closing an already-closed channel panics.
+	h.stopOnce.Do(func() {
+		close(h.stopCh)
+	})
 }
 
 func (h *Hub) BroadcastStatusChange(name string, status string, pid int, startedAt int64, rssMB int64) {

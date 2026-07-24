@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/azhai/gorch/internal/config"
+	"github.com/azhai/gorch/config"
 )
 
 // ServicePidDir is where per-service PID files are stored.
