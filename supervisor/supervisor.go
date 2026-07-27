@@ -829,24 +829,41 @@ func (s *Supervisor) HandleReload() error {
 	return nil
 }
 
-// rebuildCronScheduler stops the running scheduler and re-registers every cron
-// job from the current configuration. It must be called with s.mu held.
+// rebuildCronScheduler updates the cron scheduler to match the current
+// configuration. It removes jobs that are no longer present, adds new jobs,
+// and updates existing jobs if their expression changed.
+//
+// Unlike the previous implementation which stopped and recreated the entire
+// scheduler (which blocked on Stop() and could deadlock with s.mu held),
+// this function uses Remove + Add operations which are non-blocking. Running
+// jobs are allowed to finish naturally; only future scheduling is affected.
+//
+// It must be called with s.mu held.
 func (s *Supervisor) rebuildCronScheduler() error {
-	if s.cronSched != nil {
-		s.cronSched.Stop()
+	if s.cronSched == nil {
+		s.cronSched = cron.NewScheduler()
+		s.cronSched.Start()
 	}
-	newSched := cron.NewScheduler()
+
+	want := make(map[string]bool)
 	for name, svc := range s.cfg.Services {
 		if svc.CRON == "" {
 			continue
 		}
-		if err := newSched.AddJob(name, svc.CRON, "", s.makeCronFn(name, svc)); err != nil {
+		want[name] = true
+		if err := s.cronSched.AddJob(name, svc.CRON, "", s.makeCronFn(name, svc)); err != nil {
 			return fmt.Errorf("failed to register cron for '%s': %w", name, err)
 		}
 		slog.Info("registered cron job", "service", name, "expression", svc.CRON)
 	}
-	s.cronSched = newSched
-	newSched.Start()
+
+	for _, name := range s.cronSched.JobNames() {
+		if !want[name] {
+			s.cronSched.RemoveJob(name)
+			slog.Info("removed cron job", "service", name)
+		}
+	}
+
 	return nil
 }
 

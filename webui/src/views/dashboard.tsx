@@ -74,7 +74,12 @@ export default function Dashboard() {
               startedAt: info.startedAt ?? s.startedAt,
             }
           }
-          return s
+          // The server only reports a process result for running services. When a
+          // service is absent here, it has no live process — stop the local elapsed
+          // timer by resetting startedAt so the UI shows a dash instead of a stale,
+          // ever-growing value.
+          if (s.startedAt === 0) return s
+          return { ...s, startedAt: 0 }
         })
       )
     }
