@@ -427,9 +427,8 @@ func (s *Supervisor) GetHub() *web.Hub {
 
 func (s *Supervisor) UpdateServiceConfig(name string, svc config.ServiceConfig) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if _, exists := s.cfg.Services[name]; !exists {
+		s.mu.Unlock()
 		return fmt.Errorf("service not found: %s", name)
 	}
 
@@ -437,6 +436,13 @@ func (s *Supervisor) UpdateServiceConfig(name string, svc config.ServiceConfig) 
 
 	// 依赖关系可能变化，重算拓扑序
 	s.cfg.RecalcTopoOrder()
+	s.mu.Unlock()
+
+	// 刷新 cron scheduler，确保定时任务时间变更立即生效。
+	// 必须在锁外调用，避免与正在执行的 cron job 形成死锁。
+	if err := s.rebuildCronScheduler(); err != nil {
+		return fmt.Errorf("config updated but cron refresh failed: %w", err)
+	}
 	return nil
 }
 
@@ -492,6 +498,11 @@ func (s *Supervisor) DeleteService(name string) error {
 	delete(s.cfg.Services, name)
 	s.statusCache.Update(name, status.ServiceStatus{Name: name, Status: config.StatusStopped})
 	s.mu.Unlock()
+
+	// Remove cron job if any (must be OUTSIDE s.mu for lock ordering)
+	if s.cronSched != nil {
+		s.cronSched.RemoveJob(name)
+	}
 	return nil
 }
 
@@ -808,8 +819,6 @@ func (s *Supervisor) HandleReload() error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for name := range newCfg.Services {
 		_, exists := s.cfg.Services[name]
 		if !exists {
@@ -818,11 +827,13 @@ func (s *Supervisor) HandleReload() error {
 			slog.Info("service config may have changed", "service", name)
 		}
 	}
-
 	s.cfg = newCfg
 	slog.Info("config reloaded")
+	s.mu.Unlock()
 
 	// Rebuild the cron scheduler so any changes to CRON schedules take effect.
+	// Must be called OUTSIDE s.mu to obey lock ordering (rebuildCronScheduler
+	// takes s.mu briefly internally, then takes scheduler.mu).
 	if err := s.rebuildCronScheduler(); err != nil {
 		return fmt.Errorf("failed to reload cron schedules: %w", err)
 	}
@@ -833,34 +844,43 @@ func (s *Supervisor) HandleReload() error {
 // configuration. It removes jobs that are no longer present, adds new jobs,
 // and updates existing jobs if their expression changed.
 //
-// Unlike the previous implementation which stopped and recreated the entire
-// scheduler (which blocked on Stop() and could deadlock with s.mu held),
-// this function uses Remove + Add operations which are non-blocking. Running
-// jobs are allowed to finish naturally; only future scheduling is affected.
-//
-// It must be called with s.mu held.
+// Lock order safety:
+//   - Cron trigger path: scheduler internal lock (robfig/cron) → s.mu (makeCronFn)
+//   - This function: briefly takes s.mu to snapshot config data, then releases
+//     s.mu before calling AddJob/RemoveJob (which take scheduler.mu).
+//     This avoids AB/BA deadlock. Must NOT be called with s.mu held.
 func (s *Supervisor) rebuildCronScheduler() error {
+	// Take a snapshot of the service → CRON mapping under s.mu
+	type cronSvc struct {
+		expression string
+		svc        config.ServiceConfig
+	}
+	s.mu.Lock()
 	if s.cronSched == nil {
 		s.cronSched = cron.NewScheduler()
 		s.cronSched.Start()
 	}
-
-	want := make(map[string]bool)
+	wanted := make(map[string]cronSvc)
 	for name, svc := range s.cfg.Services {
 		if svc.CRON == "" {
 			continue
 		}
-		want[name] = true
-		if err := s.cronSched.AddJob(name, svc.CRON, "", s.makeCronFn(name, svc)); err != nil {
+		wanted[name] = cronSvc{expression: svc.CRON, svc: svc}
+	}
+	s.mu.Unlock()
+
+	// Apply updates OUTSIDE s.mu to avoid deadlock with cron trigger path.
+	for name, cs := range wanted {
+		if err := s.cronSched.AddJob(name, cs.expression, "", s.makeCronFn(name, cs.svc)); err != nil {
 			return fmt.Errorf("failed to register cron for '%s': %w", name, err)
 		}
-		slog.Info("registered cron job", "service", name, "expression", svc.CRON)
+		slog.Info("registered cron job", "service", name, "expression", cs.expression)
 	}
 
-	for _, name := range s.cronSched.JobNames() {
-		if !want[name] {
-			s.cronSched.RemoveJob(name)
-			slog.Info("removed cron job", "service", name)
+	for _, existing := range s.cronSched.JobNames() {
+		if _, keep := wanted[existing]; !keep {
+			s.cronSched.RemoveJob(existing)
+			slog.Info("removed cron job", "service", existing)
 		}
 	}
 

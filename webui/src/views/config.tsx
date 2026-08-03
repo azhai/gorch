@@ -45,35 +45,29 @@ export default function Config() {
     setMessageType(type)
   }
 
-  const handleSave = async () => {
+  const handleSaveAndApply = async () => {
     if (!config || !selected) return
     setSaving(true)
     setMessage(null)
     try {
-      const res = await updateServiceConfig(selected, config)
-      if (res.success) {
+      // Step 1: Apply in-memory changes if there are any (includes cron scheduler refresh)
+      if (hasChanges) {
+        const applyRes = await updateServiceConfig(selected, config)
+        if (!applyRes.success) {
+          showMsg(applyRes.message || t('config.updateFailed'), 'error')
+          return
+        }
         setOriginalConfig(JSON.parse(JSON.stringify(config)))
-        showMsg(t('config.applied'), 'success')
-      } else {
-        showMsg(res.message || t('config.updateFailed'), 'error')
       }
-    } catch (err) {
-      showMsg(err instanceof Error ? err.message : t('config.networkError'), 'error')
-    } finally {
-      setSaving(false)
-    }
-  }
 
-  const handleSaveToFile = async () => {
-    setSaving(true)
-    setMessage(null)
-    try {
-      const res = await saveConfigToFile()
-      if (res.success) {
-        showMsg(t('config.savedToFile'), 'success')
-      } else {
-        showMsg(res.message || t('config.saveToFileFailed'), 'error')
+      // Step 2: Persist to file
+      const saveRes = await saveConfigToFile()
+      if (!saveRes.success) {
+        showMsg(saveRes.message || t('config.saveToFileFailed'), 'error')
+        return
       }
+
+      showMsg(t('config.savedAndApplied'), 'success')
     } catch (err) {
       showMsg(err instanceof Error ? err.message : t('config.networkError'), 'error')
     } finally {
@@ -487,20 +481,13 @@ export default function Config() {
               </button>
             ) : (
               <button
-                onClick={handleSave}
-                disabled={!hasChanges || saving}
-                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={handleSaveAndApply}
+                disabled={saving}
+                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {saving ? t('config.applying') : t('config.apply')}
+                {saving ? t('config.saving') : t('config.saveAndApply')}
               </button>
             )}
-            <button
-              onClick={handleSaveToFile}
-              disabled={saving}
-              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40"
-            >
-              {saving ? t('config.saving') : t('config.saveToFile')}
-            </button>
             {isCreating && (
               <button
                 onClick={() => {
