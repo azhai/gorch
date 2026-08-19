@@ -118,7 +118,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 			continue
 		}
 
-		if err := s.startService(ctx, name, svc); err != nil {
+		if err := s.startService(ctx, name, svc, s.knownPidsLocked(name)); err != nil {
 			slog.Error("failed to start service", "service", name, "error", err)
 			return err
 		}
@@ -251,7 +251,7 @@ func (s *Supervisor) StartService(ctx context.Context, name string) error {
 		return fmt.Errorf("cannot directly start cron service '%s', use reload", name)
 	}
 
-	return s.startService(ctx, name, svc)
+	return s.startService(ctx, name, svc, s.knownPids(name))
 }
 
 func (s *Supervisor) StopService(ctx context.Context, name string) error {
@@ -292,7 +292,7 @@ func (s *Supervisor) RestartService(ctx context.Context, name string) error {
 			if svc.PID_FILE != "" {
 				found = tryReadUserPidFile(svc.PID_FILE)
 			} else {
-				found = findMainProcessByName(svc.EXEC_CMD)
+				found = findMainProcessByName(svc.EXEC_CMD, s.knownPids(name))
 			}
 			if found > 0 {
 				proc.Pid = found
@@ -314,11 +314,39 @@ func (s *Supervisor) RestartService(ctx context.Context, name string) error {
 		slog.Warn("stop service failed during restart", "service", name, "error", err)
 	}
 
-	return s.startService(ctx, name, svc)
+	return s.startService(ctx, name, svc, s.knownPids(name))
 }
 
 func (s *Supervisor) GetStatus(name string) (status.ServiceStatus, bool) {
 	return s.statusCache.Get(name)
+}
+
+// knownPids returns the PIDs of all processes currently tracked by the supervisor
+// (both supervised services and one-shot cron tasks), excluding the service named
+// excludeName. The caller MUST already hold s.mu (read or write lock); this helper
+// does not take the lock itself to avoid self-deadlock when called from code that
+// already holds the write lock.
+func (s *Supervisor) knownPids(excludeName string) map[int]bool {
+	pids := make(map[int]bool)
+	for n, p := range s.processes {
+		if n != excludeName && p.Pid > 0 {
+			pids[p.Pid] = true
+		}
+	}
+	for n, p := range s.cronProcs {
+		if n != excludeName && p.Pid > 0 {
+			pids[p.Pid] = true
+		}
+	}
+	return pids
+}
+
+// knownPidsLocked is like knownPids but acquires the read lock itself, for callers
+// that do not already hold s.mu.
+func (s *Supervisor) knownPidsLocked(excludeName string) map[int]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.knownPids(excludeName)
 }
 
 func (s *Supervisor) GetAllStatus() map[string]status.ServiceStatus {
@@ -399,7 +427,7 @@ func (s *Supervisor) resolveProcessInfo(name string, proc *ProcessInfo) (int, ps
 		}
 	}
 
-	if found := findMainProcessByName(svc.EXEC_CMD); found > 0 {
+	if found := findMainProcessByName(svc.EXEC_CMD, s.knownPids(name)); found > 0 {
 		info = getProcessInfo(found)
 		if info.state != "" {
 			return found, info
@@ -565,7 +593,7 @@ func (s *Supervisor) HandleCommand(cmd ipc.ControlCommand) ipc.ControlResponse {
 	}
 }
 
-func (s *Supervisor) startService(ctx context.Context, name string, svc config.ServiceConfig) error {
+func (s *Supervisor) startService(ctx context.Context, name string, svc config.ServiceConfig, excludePids map[int]bool) error {
 	// Try to adopt a previously-running process via lock file candidates.
 	// This happens when gorch was gracefully restarted and services survived.
 	if s.adoptCandidates != nil {
@@ -616,7 +644,7 @@ func (s *Supervisor) startService(ctx context.Context, name string, svc config.S
 	// Wait briefly for daemonized processes (e.g. nginx/angie) that fork a new
 	// master and exit the original PID. If the original PID dies but a process
 	// with the same executable name appears, switch to tracking the new master.
-	if found := s.detectDaemonize(proc, svc); found > 0 {
+	if found := s.detectDaemonize(proc, svc, excludePids); found > 0 {
 		proc.Pid = found
 		proc.Adopted = true
 		// Close the Cmd handle — the original process is gone, Wait() would fail.

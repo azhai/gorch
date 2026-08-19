@@ -102,7 +102,12 @@ func getProcessTreeMemoryMB(pid int) int64 {
 // so they have PPID=master. Strategy:
 //  1. Among matches, prefer the one with PPID=1 (daemonized master reparented to init).
 //  2. Fall back to the smallest PID (master starts first).
-func findMainProcessByName(execCmd string) int {
+//
+// excludePids holds PIDs already tracked by other services. They are filtered out so that
+// when several services share the same executable (e.g. a long-running app and a cron task
+// both invoking the "bingwp" binary), a daemonize search for one service does not adopt a
+// process that legitimately belongs to another service.
+func findMainProcessByName(execCmd string, excludePids map[int]bool) int {
 	parts := strings.Fields(execCmd)
 	if len(parts) == 0 {
 		return 0
@@ -114,7 +119,7 @@ func findMainProcessByName(execCmd string) int {
 	}
 	var pids []int
 	for _, s := range strings.Fields(string(out)) {
-		if pid, err := strconv.Atoi(s); err == nil && pid > 0 {
+		if pid, err := strconv.Atoi(s); err == nil && pid > 0 && !excludePids[pid] {
 			pids = append(pids, pid)
 		}
 	}

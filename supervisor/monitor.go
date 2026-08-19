@@ -20,7 +20,11 @@ import (
 // With PID_FILE configured, we trust the PID file and read the real PID directly,
 // without waiting for the original process to exit (angie may not exit the parent).
 // Without PID_FILE, fall back to the original wait+find approach.
-func (s *Supervisor) detectDaemonize(proc *ProcessInfo, svc config.ServiceConfig) int {
+//
+// excludePids is the set of PIDs already owned by other services; it is forwarded to
+// findMainProcessByName so a shared-executable daemonize search does not steal another
+// service's process.
+func (s *Supervisor) detectDaemonize(proc *ProcessInfo, svc config.ServiceConfig, excludePids map[int]bool) int {
 	originalPid := proc.Pid
 
 	// With PID_FILE, read the PID directly without waiting for the original process to exit.
@@ -51,7 +55,7 @@ func (s *Supervisor) detectDaemonize(proc *ProcessInfo, svc config.ServiceConfig
 		time.Sleep(50 * time.Millisecond)
 		if proc.Cmd.Process.Signal(syscall.Signal(0)) != nil {
 			// Original process has exited — find the new master.
-			found := findMainProcessByName(svc.EXEC_CMD)
+			found := findMainProcessByName(svc.EXEC_CMD, excludePids)
 			if found > 0 && found != originalPid {
 				slog.Info("detected daemonize, switching to new master PID",
 					"service", proc.Name, "oldPid", originalPid, "newPid", found)
@@ -66,13 +70,17 @@ func (s *Supervisor) detectDaemonize(proc *ProcessInfo, svc config.ServiceConfig
 
 // findDaemonizedMaster checks if a process that just exited has a replacement
 // (daemonize pattern). Checks PID_FILE first, then falls back to findMainProcessByName.
-func findDaemonizedMaster(proc *ProcessInfo, svc config.ServiceConfig) int {
+//
+// excludePids is the set of PIDs already owned by other services; it is forwarded to
+// findMainProcessByName so a shared-executable search does not adopt another service's
+// process (e.g. a cron task and a long-running app built from the same binary).
+func findDaemonizedMaster(proc *ProcessInfo, svc config.ServiceConfig, excludePids map[int]bool) int {
 	if svc.PID_FILE != "" {
 		if pid := tryReadUserPidFile(svc.PID_FILE); pid > 0 && pid != proc.Pid {
 			return pid
 		}
 	}
-	found := findMainProcessByName(svc.EXEC_CMD)
+	found := findMainProcessByName(svc.EXEC_CMD, excludePids)
 	if found > 0 && found != proc.Pid {
 		return found
 	}
@@ -103,7 +111,10 @@ func (s *Supervisor) monitorLoop(ctx context.Context, name string, svc config.Se
 
 	// Check if the process daemonized (forked a new master and exited the original
 	// PID). This handles cases where detectDaemonize's 500ms timeout was too short.
-	if newPid := findDaemonizedMaster(proc, svc); newPid > 0 {
+	// Collect PIDs owned by other services (under the read lock) so a shared-executable
+	// daemonize search does not adopt another service's process.
+	excludePids := s.knownPidsLocked(name)
+	if newPid := findDaemonizedMaster(proc, svc, excludePids); newPid > 0 {
 		s.mu.Lock()
 		if proc.ManualStop {
 			s.mu.Unlock()
@@ -157,6 +168,9 @@ func (s *Supervisor) handleExited(ctx context.Context, name string, svc config.S
 		restartCnt := proc.RestartCnt + 1
 		// Remove old proc before starting new one
 		delete(s.processes, name)
+		// Snapshot PIDs owned by other services while we still hold the write lock,
+		// so the upcoming startService can exclude them from any daemonize search.
+		excludePids := s.knownPids(name)
 		s.mu.Unlock()
 
 		// Skip restart if supervisor is shutting down
@@ -179,7 +193,7 @@ func (s *Supervisor) handleExited(ctx context.Context, name string, svc config.S
 			return
 		}
 
-		if err := s.startService(ctx, name, svc); err != nil {
+		if err := s.startService(ctx, name, svc, excludePids); err != nil {
 			slog.Error("restart failed", "service", name, "error", err)
 		} else if newProc, ok := s.processes[name]; ok {
 			newProc.RestartCnt = restartCnt

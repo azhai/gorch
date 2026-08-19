@@ -30,7 +30,7 @@ func getProcessTreeMemoryMB(pid int) int64 {
 }
 
 // findMainProcessByName is unsupported on non-Unix platforms.
-func findMainProcessByName(execCmd string) int {
+func findMainProcessByName(execCmd string, excludePids map[int]bool) int {
 	return 0
 }
 

@@ -3,7 +3,10 @@ package supervisor
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -373,4 +376,83 @@ func TestRestartService_NoRestartCmd(t *testing.T) {
 	// No process registered → stopService returns error, startService tries to start.
 	// We just verify it doesn't panic and RESTART_CMD path is not taken.
 	_ = sup.RestartService(context.Background(), "svc")
+}
+
+// TestKnownPids_ExcludesOtherServices verifies that knownPids collects the PIDs of
+// all tracked services (both supervised and cron) except the named one. This is the
+// core of the fix for the "restarting a cron task also restarts the app" bug: when
+// two services share the same executable, the daemonize search must exclude PIDs
+// already owned by the other service so it never adopts (and later kills) it.
+func TestKnownPids_ExcludesOtherServices(t *testing.T) {
+	cfg := &config.Config{
+		Services: map[string]config.ServiceConfig{
+			"bingwp":    {EXEC_CMD: "bingwp"},
+			"bingwp-up": {EXEC_CMD: "bingwp", CRON: "0 * * * * *"},
+		},
+	}
+	sup := NewSupervisor(cfg)
+
+	sup.processes["bingwp"] = &ProcessInfo{Name: "bingwp", Pid: 11111}
+	sup.cronProcs["bingwp-up"] = &ProcessInfo{Name: "bingwp-up", Pid: 22222}
+
+	// Excluding "bingwp-up" must keep the app's PID (so the cron task's daemonize
+	// search cannot steal it) and drop the cron task's own PID.
+	got := sup.knownPids("bingwp-up")
+	if !got[11111] {
+		t.Errorf("knownPids(bingwp-up) missing app PID 11111; got %v", got)
+	}
+	if got[22222] {
+		t.Errorf("knownPids(bingwp-up) should exclude cron task's own PID 22222; got %v", got)
+	}
+
+	// Symmetric the other way: excluding the app keeps the cron task's PID.
+	got = sup.knownPids("bingwp")
+	if !got[22222] {
+		t.Errorf("knownPids(bingwp) missing cron PID 22222; got %v", got)
+	}
+	if got[11111] {
+		t.Errorf("knownPids(bingwp) should exclude app's own PID 11111; got %v", got)
+	}
+
+	// knownPidsLocked must produce the same result without the caller holding the lock.
+	got = sup.knownPidsLocked("bingwp-up")
+	if !got[11111] || got[22222] {
+		t.Errorf("knownPidsLocked(bingwp-up) = %v, want {11111}", got)
+	}
+}
+
+// TestFindMainProcessByName_ExcludePids verifies that findMainProcessByName skips
+// PIDs listed in excludePids. We spawn a real "sleep" process so pgrep -x sleep has
+// at least one match, then exclude that PID and expect the function not to return it.
+func TestFindMainProcessByName_ExcludePids(t *testing.T) {
+	// Spawn a sleep process so there is a real match for pgrep -x sleep.
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start sleep process: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	pid := cmd.Process.Pid
+
+	// Without exclusion, findMainProcessByName may return any sleep PID; with our
+	// spawned PID excluded along with every other sleep PID currently on the host,
+	// it must return 0 (no candidates left).
+	allSleepPids := make(map[int]bool)
+	allSleepPids[pid] = true
+	// Add any other sleep processes currently running so the test is deterministic
+	// regardless of host state.
+	if out, err := exec.Command("pgrep", "-x", "sleep").Output(); err == nil {
+		for _, s := range strings.Fields(string(out)) {
+			if p, err := strconv.Atoi(s); err == nil {
+				allSleepPids[p] = true
+			}
+		}
+	}
+
+	if got := findMainProcessByName("sleep 30", allSleepPids); got != 0 {
+		t.Errorf("findMainProcessByName with all PIDs excluded = %d, want 0", got)
+	}
 }
