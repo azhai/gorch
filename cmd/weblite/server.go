@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/azhai/gorch/common"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 type Server struct {
@@ -29,12 +29,10 @@ func NewServer(opts *Options) *Server {
 	rootDir := opts.Dir
 
 	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = true
 
 	e.Use(accessLogMiddleware())
 	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			decoded, err := url.PathUnescape(c.Param("*"))
 			if err != nil {
 				return c.NoContent(http.StatusForbidden)
@@ -53,7 +51,7 @@ func NewServer(opts *Options) *Server {
 		}
 	})
 
-	e.GET("/*", func(c echo.Context) error {
+	e.GET("/*", func(c *echo.Context) error {
 		relPath := c.Param("*")
 		if relPath == "" {
 			relPath = "."
@@ -102,17 +100,17 @@ func (s *Server) Start() error {
 			return
 		}
 		slog.Info("shutting down...")
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		s.app.Shutdown(shutdownCtx)
 		cancel()
 	})
 
-	if err := s.app.Start(s.addr); err != nil && err != http.ErrServerClosed {
+	cfg := echo.StartConfig{
+		Address:    s.addr,
+		HideBanner: true,
+		HidePort:   true,
+	}
+	if err := cfg.Start(ctx, s.app); err != nil && err != http.ErrServerClosed {
 		return err
 	}
-
-	<-ctx.Done()
 	return nil
 }
 
@@ -120,15 +118,15 @@ func (s *Server) Start() error {
 
 func accessLogMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			start := time.Now()
 			err := next(c)
 			slog.Info("request",
 				"time", start.Format("2006-01-02 15:04:05"),
 				"method", c.Request().Method,
 				"path", c.Path(),
-				"status", c.Response().Status,
-				"bytes", c.Response().Size,
+				"status", responseStatus(c),
+				"bytes", responseSize(c),
 			)
 			return err
 		}
@@ -171,10 +169,11 @@ func isPathWithinRoot(root, target string) bool {
 
 // ── Helpers ──────────────────────────────────────────────
 
-func serveFile(c echo.Context, path string) error {
+func serveFile(c *echo.Context, path string) error {
 	ext := filepath.Ext(path)
-	if ext != "" {
-		c.Response().Header().Set("Content-Type", mimeTypeForExt(ext))
+	contentType := mimeTypeForExt(ext)
+	if ext == "" {
+		contentType = "application/octet-stream"
 	}
 
 	stat, err := os.Stat(path)
@@ -182,10 +181,19 @@ func serveFile(c echo.Context, path string) error {
 		c.Response().Header().Set("Content-Length", fmt.Sprintf("%d", stat.Size()))
 	}
 
-	return c.File(path)
+	// echo v5's c.File() serves via e.Filesystem (which defaults to the process
+	// working directory), so absolute paths fail. Open the file directly and stream
+	// it back instead.
+	f, err := os.Open(path)
+	if err != nil {
+		return c.NoContent(http.StatusNotFound)
+	}
+	defer f.Close()
+
+	return c.Stream(http.StatusOK, contentType, f)
 }
 
-func serveDirectoryListing(c echo.Context, dirPath, relPath string) error {
+func serveDirectoryListing(c *echo.Context, dirPath, relPath string) error {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return c.NoContent(http.StatusInternalServerError)
@@ -276,4 +284,21 @@ func mimeTypeForExt(ext string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// responseStatus returns the HTTP status code recorded on the echo Response.
+// In echo v5 c.Response() exposes only the http.ResponseWriter interface, so the
+// underlying *echo.Response must be unwrapped to read Status/Size.
+func responseStatus(c *echo.Context) int {
+	if resp, err := echo.UnwrapResponse(c.Response()); err == nil && resp != nil {
+		return resp.Status
+	}
+	return 0
+}
+
+func responseSize(c *echo.Context) int64 {
+	if resp, err := echo.UnwrapResponse(c.Response()); err == nil && resp != nil {
+		return resp.Size
+	}
+	return 0
 }

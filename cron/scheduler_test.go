@@ -13,8 +13,8 @@ func TestNewScheduler(t *testing.T) {
 	if s == nil {
 		t.Fatal("NewScheduler() returned nil")
 	}
-	if s.cron == nil {
-		t.Error("cron engine not initialized")
+	if s.jobs == nil {
+		t.Error("jobs map not initialized")
 	}
 	if s.records == nil {
 		t.Error("records map not initialized")

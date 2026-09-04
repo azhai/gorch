@@ -13,13 +13,13 @@ import (
 
 	"github.com/azhai/go-totp"
 	"github.com/azhai/gorch/config"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 func authMiddleware(cfg config.WebConfig, urlPrefix string) echo.MiddlewareFunc {
 	if !cfg.WEB_AUTH {
 		return func(next echo.HandlerFunc) echo.HandlerFunc {
-			return func(c echo.Context) error {
+			return func(c *echo.Context) error {
 				return next(c)
 			}
 		}
@@ -35,7 +35,7 @@ func authMiddleware(cfg config.WebConfig, urlPrefix string) echo.MiddlewareFunc 
 	eventsPrefix := apiPrefix + "/events"
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			path := c.Path()
 
 			if strings.HasPrefix(path, authPrefix) {
@@ -69,7 +69,7 @@ func authMiddleware(cfg config.WebConfig, urlPrefix string) echo.MiddlewareFunc 
 	}
 }
 
-func (s *Server) handleLogin(c echo.Context) error {
+func (s *Server) handleLogin(c *echo.Context) error {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -103,7 +103,7 @@ func (s *Server) handleLogin(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"token": token}))
 }
 
-func (s *Server) handleLoginTotp(c echo.Context) error {
+func (s *Server) handleLoginTotp(c *echo.Context) error {
 	var body struct {
 		Username string `json:"username"`
 		Code     string `json:"code"`
@@ -206,16 +206,14 @@ func validateToken(token string, secret []byte) bool {
 }
 
 // Custom HTTP error handler to return JSON instead of HTML
-func customHTTPErrorHandler(err error, c echo.Context) {
+func customHTTPErrorHandler(c *echo.Context, err error) {
 	code := http.StatusInternalServerError
 	msg := "internal server error"
 
 	if he, ok := err.(*echo.HTTPError); ok {
 		code = he.Code
-		if m, ok := he.Message.(string); ok {
-			msg = m
-		} else if s, ok := he.Message.(fmt.Stringer); ok {
-			msg = s.String()
+		if he.Message != "" {
+			msg = he.Message
 		}
 	}
 

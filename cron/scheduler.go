@@ -8,12 +8,58 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
+const (
+	// tickInterval is how often the scheduler compares the wall clock against
+	// each job's next run time.
+	//
+	// This scheduler deliberately polls the wall clock instead of relying on a
+	// single long-lived time.Timer (as robfig/cron's engine does). Go timers do
+	// not advance while the machine is asleep, so a job scheduled during a sleep
+	// window was previously skipped entirely and only ran later, at whatever
+	// moment accumulated *awake* time happened to catch up. Re-checking the wall
+	// clock on every tick means a missed run is detected as soon as the machine
+	// wakes and is executed once ("catch-up").
+	tickInterval = 250 * time.Millisecond
+
+	// maxHistory is the number of execution records retained per service.
+	maxHistory = 10
+)
+
+// job is a single registered cron task.
+type job struct {
+	name       string
+	expression string
+	timezone   string
+	schedule   cron.Schedule
+	loc        *time.Location
+	fn         func()
+	next       time.Time
+}
+
+// Scheduler runs cron tasks on a wall-clock driven loop.
+//
+// It keeps the public API of the previous robfig/cron-backed implementation but
+// owns its own run loop so that schedules remain accurate across system sleep /
+// suspend and so that schedule changes take effect immediately.
 type Scheduler struct {
-	cron     *cron.Cron
-	records  map[string][]CronExecutionRecord
-	running  map[string]bool
-	entryIDs map[string]cron.EntryID
-	mu       sync.RWMutex
+	parser cron.Parser
+
+	mu      sync.RWMutex
+	jobs    map[string]*job
+	records map[string][]CronExecutionRecord
+	running map[string]bool
+
+	// Run-loop state, guarded by loopMu.
+	loopMu  sync.Mutex
+	started bool
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	wg      sync.WaitGroup
+
+	// nowFunc returns the current wall-clock time. It exists so tests can
+	// simulate the machine waking from sleep (wall clock jumping forward)
+	// instead of sleeping for real.
+	nowFunc func() time.Time
 }
 
 type CronExecutionRecord struct {
@@ -27,85 +73,188 @@ type CronExecutionRecord struct {
 
 func NewScheduler() *Scheduler {
 	return &Scheduler{
-		cron:     cron.New(cron.WithSeconds()),
-		records:  make(map[string][]CronExecutionRecord),
-		running:  make(map[string]bool),
-		entryIDs: make(map[string]cron.EntryID),
+		parser: cron.NewParser(
+			cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
+		),
+		jobs:    make(map[string]*job),
+		records: make(map[string][]CronExecutionRecord),
+		running: make(map[string]bool),
 	}
 }
 
+// now returns the current wall-clock time.
+func (s *Scheduler) now() time.Time {
+	if s.nowFunc != nil {
+		return s.nowFunc()
+	}
+	return time.Now()
+}
+
+// AddJob registers (or replaces) a cron job. The new schedule takes effect
+// immediately, even while the scheduler is running.
+//
+// The expression is validated before any state is mutated, so a bad expression
+// can never destroy an already-registered job.
 func (s *Scheduler) AddJob(name string, expression string, timezone string, fn func()) error {
-	opts := []cron.Option{cron.WithSeconds()}
+	loc := time.Local
 	if timezone != "" {
-		loc, err := time.LoadLocation(timezone)
+		parsed, err := time.LoadLocation(timezone)
 		if err != nil {
 			return fmt.Errorf("invalid timezone '%s': %w", timezone, err)
 		}
-		opts = append(opts, cron.WithLocation(loc))
+		loc = parsed
 	}
 
-	wrappedFn := func() {
-		s.mu.Lock()
-		if s.running[name] {
-			s.mu.Unlock()
-			s.RecordExecution(name, CronExecutionRecord{
-				Service: name,
-				Status:  "overlap",
-			})
-			return
-		}
-		s.running[name] = true
-		s.mu.Unlock()
-
-		defer func() {
-			s.mu.Lock()
-			delete(s.running, name)
-			s.mu.Unlock()
-		}()
-
-		fn()
+	sched, err := s.parser.Parse(expression)
+	if err != nil {
+		return fmt.Errorf("invalid cron expression '%s': %w", expression, err)
 	}
+
+	now := s.now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if oldID, ok := s.entryIDs[name]; ok {
-		s.cron.Remove(oldID)
-		delete(s.entryIDs, name)
+	// Re-registering an unchanged schedule must NOT reset the next run time.
+	// rebuildCronScheduler re-adds every job on each config update, and pushing
+	// `next` forward on those no-op rebuilds would delay (or entirely starve)
+	// the task: an unrelated "Apply" just before the due time would silently
+	// postpone the execution by a whole interval.
+	if old, ok := s.jobs[name]; ok && old.expression == expression && old.timezone == timezone {
+		old.schedule = sched
+		old.loc = loc
+		old.fn = fn
+		return nil
 	}
 
-	id, err := s.cron.AddFunc(expression, wrappedFn)
-	if err != nil {
-		return fmt.Errorf("invalid cron expression '%s': %w", expression, err)
+	s.jobs[name] = &job{
+		name:       name,
+		expression: expression,
+		timezone:   timezone,
+		schedule:   sched,
+		loc:        loc,
+		fn:         fn,
+		next:       sched.Next(now.In(loc)),
 	}
-	s.entryIDs[name] = id
-
 	return nil
 }
 
+// Start launches the run loop. It is a no-op if already started, and a stopped
+// scheduler may be started again.
 func (s *Scheduler) Start() {
-	s.cron.Start()
+	s.loopMu.Lock()
+	defer s.loopMu.Unlock()
+
+	if s.started {
+		return
+	}
+	s.started = true
+	s.stopCh = make(chan struct{})
+	s.doneCh = make(chan struct{})
+	go s.runLoop()
 }
 
-// JobCount returns the number of registered cron jobs (entries).
+// Stop shuts the run loop down and waits for in-flight jobs to finish.
+func (s *Scheduler) Stop() {
+	s.loopMu.Lock()
+	if !s.started {
+		s.loopMu.Unlock()
+		return
+	}
+	s.started = false
+	close(s.stopCh)
+	doneCh := s.doneCh
+	s.loopMu.Unlock()
+
+	<-doneCh
+	s.wg.Wait()
+}
+
+func (s *Scheduler) runLoop() {
+	defer close(s.doneCh)
+
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.runDue(s.now())
+		}
+	}
+}
+
+// runDue fires every job whose next run time has been reached, using the given
+// wall-clock time.
+//
+// A job whose next time has already passed (the machine was asleep, or the
+// process was suspended) is run exactly once and then rescheduled from now —
+// missed occurrences are collapsed into a single catch-up run rather than
+// replaying each one.
+func (s *Scheduler) runDue(now time.Time) {
+	s.mu.Lock()
+	var due []*job
+	for _, j := range s.jobs {
+		if now.Before(j.next) {
+			continue
+		}
+		j.next = j.schedule.Next(now.In(j.loc))
+		due = append(due, j)
+	}
+	s.mu.Unlock()
+
+	for _, j := range due {
+		s.wg.Add(1)
+		go func(j *job) {
+			defer s.wg.Done()
+			s.fire(j)
+		}(j)
+	}
+}
+
+// fire runs a single job, skipping it (and recording an "overlap") if a
+// previous run of the same job is still in progress.
+func (s *Scheduler) fire(j *job) {
+	s.mu.Lock()
+	if s.running[j.name] {
+		s.mu.Unlock()
+		s.RecordExecution(j.name, CronExecutionRecord{
+			Service:   j.name,
+			StartedAt: time.Now(),
+			Status:    "overlap",
+		})
+		return
+	}
+	s.running[j.name] = true
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.running, j.name)
+		s.mu.Unlock()
+	}()
+
+	j.fn()
+}
+
+// JobCount returns the number of registered cron jobs.
 func (s *Scheduler) JobCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.entryIDs)
+	return len(s.jobs)
 }
 
 // RemoveJob removes a cron job by name. It returns true if the job existed.
-// It does not wait for any currently running instance of the job to finish.
 func (s *Scheduler) RemoveJob(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id, ok := s.entryIDs[name]
-	if !ok {
+	if _, ok := s.jobs[name]; !ok {
 		return false
 	}
-	s.cron.Remove(id)
-	delete(s.entryIDs, name)
+	delete(s.jobs, name)
 	return true
 }
 
@@ -113,7 +262,7 @@ func (s *Scheduler) RemoveJob(name string) bool {
 func (s *Scheduler) HasJob(name string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, ok := s.entryIDs[name]
+	_, ok := s.jobs[name]
 	return ok
 }
 
@@ -121,16 +270,22 @@ func (s *Scheduler) HasJob(name string) bool {
 func (s *Scheduler) JobNames() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	names := make([]string, 0, len(s.entryIDs))
-	for name := range s.entryIDs {
+	names := make([]string, 0, len(s.jobs))
+	for name := range s.jobs {
 		names = append(names, name)
 	}
 	return names
 }
 
-func (s *Scheduler) Stop() {
-	ctx := s.cron.Stop()
-	<-ctx.Done()
+// JobNext returns the next scheduled run time of a job, or the zero time if the
+// job is not registered.
+func (s *Scheduler) JobNext(name string) time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if j, ok := s.jobs[name]; ok {
+		return j.next
+	}
+	return time.Time{}
 }
 
 func (s *Scheduler) RecordExecution(name string, record CronExecutionRecord) {
@@ -138,8 +293,8 @@ func (s *Scheduler) RecordExecution(name string, record CronExecutionRecord) {
 	defer s.mu.Unlock()
 
 	s.records[name] = append(s.records[name], record)
-	if len(s.records[name]) > 10 {
-		s.records[name] = s.records[name][len(s.records[name])-10:]
+	if len(s.records[name]) > maxHistory {
+		s.records[name] = s.records[name][len(s.records[name])-maxHistory:]
 	}
 }
 

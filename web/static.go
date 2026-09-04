@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/azhai/gorch/webui"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // webuiDist is the embedded filesystem for the web UI.
@@ -35,7 +35,7 @@ func getFileSystem() fs.FS {
 
 // staticAssetHandler serves files from the assets/ directory.
 // Route: /assets/*
-func staticAssetHandler(c echo.Context) error {
+func staticAssetHandler(c *echo.Context) error {
 	filePath := c.Param("*")
 	if filePath == "" {
 		return c.NoContent(http.StatusNotFound)
@@ -59,7 +59,7 @@ func staticAssetHandler(c echo.Context) error {
 // spaFallbackHandler serves the SPA and static files.
 // Registered as GET "/*" on the server. Returns 404 for unmatched API
 // paths, tries embedded static files, then falls back to index.html.
-func (s *Server) spaFallbackHandler(c echo.Context) error {
+func (s *Server) spaFallbackHandler(c *echo.Context) error {
 	reqPath := c.Request().URL.Path
 	cleaned := path.Clean(reqPath)
 	if strings.Contains(cleaned, "..") {

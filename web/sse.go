@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/azhai/gorch/status"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 type SSEMessage struct {
@@ -168,7 +168,7 @@ func (h *Hub) BroadcastUptimeTick(allStatus map[string]status.ServiceStatus) {
 	}
 }
 
-func (s *Server) handleSSE(c echo.Context) error {
+func (s *Server) handleSSE(c *echo.Context) error {
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
@@ -195,7 +195,7 @@ func (s *Server) handleSSE(c echo.Context) error {
 	}()
 
 	fmt.Fprintf(c.Response(), "event: connected\ndata: {}\n\n")
-	c.Response().Flush()
+	flushResponse(c)
 
 	now := time.Now()
 	nextTick := now.Truncate(interval).Add(interval)
@@ -226,7 +226,7 @@ func (s *Server) handleSSE(c echo.Context) error {
 	sendMsg := func(msg SSEMessage) {
 		data, _ := json.Marshal(msg)
 		fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", msg.Type, data)
-		c.Response().Flush()
+		flushResponse(c)
 	}
 
 	sendMsg(buildInitialTick())
@@ -267,4 +267,13 @@ func (s *Server) handleSSE(c echo.Context) error {
 func mustMarshal(v any) json.RawMessage {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+// flushResponse flushes the buffered SSE data to the client. In echo v5
+// c.Response() returns an http.ResponseWriter whose underlying type implements
+// http.Flusher, so we assert it to flush.
+func flushResponse(c *echo.Context) {
+	if f, ok := c.Response().(http.Flusher); ok {
+		f.Flush()
+	}
 }

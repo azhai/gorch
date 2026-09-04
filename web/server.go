@@ -12,8 +12,8 @@ import (
 	"github.com/azhai/gorch/config"
 	"github.com/azhai/gorch/cron"
 	"github.com/azhai/gorch/status"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 )
 
 type SupervisorProvider interface {
@@ -39,12 +39,12 @@ type Server struct {
 	TOTP       *gototp.TOTP
 	urlPrefix  string // normalized: no leading/trailing slash, e.g. "gorch"
 	indexHTML  []byte // pre-rendered with window.__URL_PREFIX__ injected
+	cancel     context.CancelFunc
 }
 
 func NewServer(addr string, sup SupervisorProvider) *Server {
 	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = true
+	e.HTTPErrorHandler = customHTTPErrorHandler
 
 	cfg := sup.GetConfig().Web
 	urlPrefix := normalizePrefix(cfg.URL_PREFIX)
@@ -77,12 +77,20 @@ func NewServer(addr string, sup SupervisorProvider) *Server {
 }
 
 func (s *Server) Start() error {
-	return s.app.Start(s.addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	cfg := echo.StartConfig{
+		Address:    s.addr,
+		HideBanner: true,
+		HidePort:   true,
+	}
+	return cfg.Start(ctx, s.app)
 }
 
 func (s *Server) Stop() {
-	ctx := context.Background()
-	s.app.Shutdown(ctx)
+	if s.cancel != nil {
+		s.cancel()
+	}
 }
 
 func (s *Server) setupRoutes() {
@@ -105,7 +113,7 @@ func (s *Server) setupRoutes() {
 		api.GET("/totp/status", s.handleTOTPStatus)
 		api.POST("/totp/regenerate-backup", s.handleTOTPRegenerateBackup)
 	} else {
-		api.Any("/totp/*", func(c echo.Context) error {
+		api.Any("/totp/*", func(c *echo.Context) error {
 			return c.JSON(503, map[string]any{"success": false, "message": "TOTP not configured"})
 		})
 	}

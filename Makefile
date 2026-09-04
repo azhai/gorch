@@ -57,7 +57,7 @@ build: front
 		CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 $(GOBUILD) -o bin/$$target-$(VERSION).linux-arm64  $$src && \
 		CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).linux-amd64  $$src; \
 		if [ "$$target" != "$(APP)" ]; then \
-		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).exe  $$src; \
+			CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).exe  $$src; \
 		fi; \
 	done
 	@echo "✅ Build success."

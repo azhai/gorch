@@ -208,18 +208,22 @@ func TestSupervisor_HandleCommand_Unknown(t *testing.T) {
 
 func TestServicePidPath(t *testing.T) {
 	got := servicePidPath("my-service")
-	want := "/tmp/gorch/my-service.pid"
+	// Compare against ServicePidDir rather than a hardcoded path: tests run
+	// with the directory redirected to a temporary location.
+	want := filepath.Join(ServicePidDir, "my-service.pid")
 	if got != want {
 		t.Errorf("servicePidPath() = %q, want %q", got, want)
 	}
 }
 
 func TestWriteAndReadServicePidFile(t *testing.T) {
-	name := "test-pid-svc"
+	// Use a name unique to this run: background goroutines from other tests
+	// (e.g. a cron task finishing) remove their own PID files, and a fixed name
+	// here made this test flaky when that cleanup raced with it.
+	name := "test-pid-svc-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	defer RemoveServicePidFile(name)
 
-	err := WriteServicePidFile(name, 12345)
-	if err != nil {
+	if err := WriteServicePidFile(name, 12345); err != nil {
 		t.Fatalf("WriteServicePidFile() error = %v", err)
 	}
 

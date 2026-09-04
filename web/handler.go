@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/azhai/gorch/config"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/robfig/cron/v3"
 )
 
@@ -27,16 +27,16 @@ func errResponse(msg string) APIResponse {
 	return APIResponse{Success: false, Message: msg}
 }
 
-func jsonResponse(c echo.Context, status int, resp APIResponse) error {
+func jsonResponse(c *echo.Context, status int, resp APIResponse) error {
 	return c.JSON(status, resp)
 }
 
-func (s *Server) handleGetServices(c echo.Context) error {
+func (s *Server) handleGetServices(c *echo.Context) error {
 	allStatus := s.supervisor.GetAllStatus()
 	return c.JSON(http.StatusOK, okResponse(allStatus))
 }
 
-func (s *Server) handleGetService(c echo.Context) error {
+func (s *Server) handleGetService(c *echo.Context) error {
 	name := c.Param("name")
 	st, ok := s.supervisor.GetStatus(name)
 	if !ok {
@@ -45,7 +45,7 @@ func (s *Server) handleGetService(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(st))
 }
 
-func (s *Server) handleStartService(c echo.Context) error {
+func (s *Server) handleStartService(c *echo.Context) error {
 	name := c.Param("name")
 	if err := s.supervisor.StartService(c.Request().Context(), name); err != nil {
 		return c.JSON(http.StatusOK, errResponse(err.Error()))
@@ -53,7 +53,7 @@ func (s *Server) handleStartService(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + name + " started"}))
 }
 
-func (s *Server) handleStopService(c echo.Context) error {
+func (s *Server) handleStopService(c *echo.Context) error {
 	name := c.Param("name")
 	if err := s.supervisor.StopService(c.Request().Context(), name); err != nil {
 		return c.JSON(http.StatusOK, errResponse(err.Error()))
@@ -61,7 +61,7 @@ func (s *Server) handleStopService(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + name + " stopped"}))
 }
 
-func (s *Server) handleRestartService(c echo.Context) error {
+func (s *Server) handleRestartService(c *echo.Context) error {
 	name := c.Param("name")
 	if err := s.supervisor.RestartService(c.Request().Context(), name); err != nil {
 		return c.JSON(http.StatusOK, errResponse(err.Error()))
@@ -69,7 +69,7 @@ func (s *Server) handleRestartService(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + name + " restarted"}))
 }
 
-func (s *Server) handleGetLogs(c echo.Context) error {
+func (s *Server) handleGetLogs(c *echo.Context) error {
 	name := c.Param("name")
 	lines := 500
 	if l := c.QueryParam("lines"); l != "" {
@@ -118,7 +118,7 @@ func (s *Server) handleGetLogs(c echo.Context) error {
 	}))
 }
 
-func (s *Server) handleClearLogs(c echo.Context) error {
+func (s *Server) handleClearLogs(c *echo.Context) error {
 	name := c.Param("name")
 	logType := c.QueryParam("type")
 	if logType == "" {
@@ -147,7 +147,7 @@ func (s *Server) handleClearLogs(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "logs cleared"}))
 }
 
-func (s *Server) handleGetConfig(c echo.Context) error {
+func (s *Server) handleGetConfig(c *echo.Context) error {
 	name := c.Param("name")
 	cfg := s.supervisor.GetConfig()
 
@@ -159,7 +159,7 @@ func (s *Server) handleGetConfig(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(svc))
 }
 
-func (s *Server) handleUpdateConfig(c echo.Context) error {
+func (s *Server) handleUpdateConfig(c *echo.Context) error {
 	name := c.Param("name")
 	slog.Debug("update config", "service", name, "body_len", c.Request().ContentLength)
 
@@ -200,7 +200,7 @@ func (s *Server) handleUpdateConfig(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "config updated"}))
 }
 
-func (s *Server) handleSaveConfigToFile(c echo.Context) error {
+func (s *Server) handleSaveConfigToFile(c *echo.Context) error {
 	cfg := s.supervisor.GetConfig()
 	names := make([]string, 0, len(cfg.Services))
 	for n := range cfg.Services {
@@ -213,7 +213,7 @@ func (s *Server) handleSaveConfigToFile(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "config saved to file"}))
 }
 
-func (s *Server) handleGetCronHistory(c echo.Context) error {
+func (s *Server) handleGetCronHistory(c *echo.Context) error {
 	name := c.Param("name")
 	sched := s.supervisor.GetCronScheduler()
 	history := sched.GetHistory(name)
@@ -225,7 +225,7 @@ type createServiceRequest struct {
 	Svc  config.ServiceConfig `json:"svc"`
 }
 
-func (s *Server) handleCreateService(c echo.Context) error {
+func (s *Server) handleCreateService(c *echo.Context) error {
 	var req createServiceRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResponse("invalid request body: "+err.Error()))
@@ -249,7 +249,7 @@ func (s *Server) handleCreateService(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "service " + req.Name + " created"}))
 }
 
-func (s *Server) handleDeleteService(c echo.Context) error {
+func (s *Server) handleDeleteService(c *echo.Context) error {
 	name := c.Param("name")
 
 	if err := s.supervisor.DeleteService(name); err != nil {
@@ -267,7 +267,7 @@ type validateCronRequest struct {
 	Expression string `json:"expression"`
 }
 
-func (s *Server) handleValidateCron(c echo.Context) error {
+func (s *Server) handleValidateCron(c *echo.Context) error {
 	var req validateCronRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResponse("invalid request body: "+err.Error()))
@@ -301,7 +301,7 @@ func (s *Server) handleValidateCron(c echo.Context) error {
 	}))
 }
 
-func (s *Server) handleTOTPSetup(c echo.Context) error {
+func (s *Server) handleTOTPSetup(c *echo.Context) error {
 	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
@@ -313,7 +313,7 @@ func (s *Server) handleTOTPSetup(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(result))
 }
 
-func (s *Server) handleTOTPVerifySetup(c echo.Context) error {
+func (s *Server) handleTOTPVerifySetup(c *echo.Context) error {
 	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
@@ -330,7 +330,7 @@ func (s *Server) handleTOTPVerifySetup(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "TOTP enabled"}))
 }
 
-func (s *Server) handleTOTPVerify(c echo.Context) error {
+func (s *Server) handleTOTPVerify(c *echo.Context) error {
 	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
@@ -347,7 +347,7 @@ func (s *Server) handleTOTPVerify(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "verified"}))
 }
 
-func (s *Server) handleTOTPVerifyBackup(c echo.Context) error {
+func (s *Server) handleTOTPVerifyBackup(c *echo.Context) error {
 	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
@@ -364,7 +364,7 @@ func (s *Server) handleTOTPVerifyBackup(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "verified"}))
 }
 
-func (s *Server) handleTOTPDisable(c echo.Context) error {
+func (s *Server) handleTOTPDisable(c *echo.Context) error {
 	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}
@@ -375,7 +375,7 @@ func (s *Server) handleTOTPDisable(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(map[string]string{"message": "TOTP disabled"}))
 }
 
-func (s *Server) handleTOTPStatus(c echo.Context) error {
+func (s *Server) handleTOTPStatus(c *echo.Context) error {
 	if s.TOTP == nil {
 		return c.JSON(http.StatusOK, okResponse(map[string]any{"enabled": false, "hasBinding": false}))
 	}
@@ -387,7 +387,7 @@ func (s *Server) handleTOTPStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResponse(result))
 }
 
-func (s *Server) handleTOTPRegenerateBackup(c echo.Context) error {
+func (s *Server) handleTOTPRegenerateBackup(c *echo.Context) error {
 	if s.TOTP == nil {
 		return c.JSON(http.StatusBadRequest, errResponse("TOTP not configured"))
 	}

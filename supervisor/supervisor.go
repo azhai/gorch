@@ -231,8 +231,22 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	os.Remove(s.servicesLockPath)
 	os.Remove(s.socketPath)
 
-	// Clean up any remaining service PID files
-	os.RemoveAll(ServicePidDir)
+	// Clean up the PID files of the services this supervisor manages.
+	//
+	// This used to be os.RemoveAll(ServicePidDir), which deleted the whole shared
+	// directory. That is destructive: the directory is shared state, so it also
+	// removed PID files belonging to anything else using the same location, and
+	// (since "shutdown" runs Stop in a goroutine) it raced with concurrent
+	// PID-file writes. Remove only our own services' files.
+	s.mu.RLock()
+	names := make([]string, 0, len(s.cfg.Services))
+	for name := range s.cfg.Services {
+		names = append(names, name)
+	}
+	s.mu.RUnlock()
+	for _, name := range names {
+		_ = RemoveServicePidFile(name)
+	}
 
 	s.wg.Wait()
 	return nil
@@ -898,9 +912,16 @@ func (s *Supervisor) rebuildCronScheduler() error {
 	s.mu.Unlock()
 
 	// Apply updates OUTSIDE s.mu to avoid deadlock with cron trigger path.
+	//
+	// A job with an invalid expression must not abort the whole rebuild —
+	// otherwise every other (valid) schedule would silently stay unregistered.
+	// Collect errors and keep going.
+	var failed []string
 	for name, cs := range wanted {
 		if err := s.cronSched.AddJob(name, cs.expression, "", s.makeCronFn(name, cs.svc)); err != nil {
-			return fmt.Errorf("failed to register cron for '%s': %w", name, err)
+			slog.Error("failed to register cron job", "service", name, "expression", cs.expression, "error", err)
+			failed = append(failed, name)
+			continue
 		}
 		slog.Info("registered cron job", "service", name, "expression", cs.expression)
 	}
@@ -912,6 +933,9 @@ func (s *Supervisor) rebuildCronScheduler() error {
 		}
 	}
 
+	if len(failed) > 0 {
+		return fmt.Errorf("invalid cron expression for service(s): %v", failed)
+	}
 	return nil
 }
 

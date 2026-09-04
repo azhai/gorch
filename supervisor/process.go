@@ -16,7 +16,12 @@ import (
 )
 
 // ServicePidDir is where per-service PID files are stored.
-const ServicePidDir = "/tmp/gorch"
+//
+// It is a variable (not a constant) so tests can redirect it to a temporary
+// directory: the default location is shared with a running gorch instance, and
+// having tests write PID files there makes them flaky and can interfere with
+// the live supervisor's orphan cleanup.
+var ServicePidDir = "/tmp/gorch"
 
 // psInfo holds process info from a single ps call.
 type psInfo struct {
