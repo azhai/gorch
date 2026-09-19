@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,14 +27,14 @@ func TestNewSupervisor_Defaults(t *testing.T) {
 	if sup == nil {
 		t.Fatal("NewSupervisor() returned nil")
 	}
-	if sup.pidPath != "/var/run/gorch.pid" {
-		t.Errorf("default pidPath = %q, want '/var/run/gorch.pid'", sup.pidPath)
+	if sup.pidPath != config.DefaultPIDFile {
+		t.Errorf("default pidPath = %q, want %q", sup.pidPath, config.DefaultPIDFile)
 	}
-	if sup.servicesLockPath != "/var/run/gorch-services.lock" {
-		t.Errorf("default servicesLockPath = %q, want '/var/run/gorch-services.lock'", sup.servicesLockPath)
+	if sup.servicesLockPath != config.DefaultServicesLock {
+		t.Errorf("default servicesLockPath = %q, want %q", sup.servicesLockPath, config.DefaultServicesLock)
 	}
-	if sup.socketPath != "/var/run/gorch.sock" {
-		t.Errorf("default socketPath = %q, want '/var/run/gorch.sock'", sup.socketPath)
+	if sup.socketPath != config.DefaultSocketPath {
+		t.Errorf("default socketPath = %q, want %q", sup.socketPath, config.DefaultSocketPath)
 	}
 	if sup.processes == nil {
 		t.Error("processes map should be initialized")
@@ -458,5 +459,79 @@ func TestFindMainProcessByName_ExcludePids(t *testing.T) {
 
 	if got := findMainProcessByName("sleep 30", allSleepPids); got != 0 {
 		t.Errorf("findMainProcessByName with all PIDs excluded = %d, want 0", got)
+	}
+}
+
+// ── Services lock file ──────────────────────────────────────
+
+// lockTestSupervisor builds a supervisor whose runtime files all live in a
+// per-test temp directory, so the tests never touch a live gorch instance.
+func lockTestSupervisor(t *testing.T) *Supervisor {
+	t.Helper()
+	dir := t.TempDir()
+	return NewSupervisor(
+		&config.Config{Services: map[string]config.ServiceConfig{}},
+		WithPidPath(filepath.Join(dir, "gorch.pid")),
+		WithServicesLock(filepath.Join(dir, "gorch-services.lock")),
+		WithSocketPath(filepath.Join(dir, "gorch.sock")),
+	)
+}
+
+// TestWriteAndReadServicesLock covers the round trip the adoption path relies
+// on: whatever writeServicesLock records must come back out of readServicesLock.
+func TestWriteAndReadServicesLock(t *testing.T) {
+	sup := lockTestSupervisor(t)
+	sup.processes["api"] = &ProcessInfo{Name: "api", Pid: 4242}
+
+	sup.writeServicesLock()
+
+	got := sup.readServicesLock()
+	if got == nil {
+		t.Fatal("readServicesLock() = nil, want the freshly written snapshot")
+	}
+	if got["api"] != 4242 {
+		t.Errorf("services lock = %v, want api=4242", got)
+	}
+}
+
+// TestReadServicesLock_StaleIgnored verifies a file older than maxOrphanAge is
+// discarded instead of being used to adopt long-gone processes.
+func TestReadServicesLock_StaleIgnored(t *testing.T) {
+	sup := lockTestSupervisor(t)
+
+	// Staleness is decided by the updatedAt field inside the file, not by the
+	// file's mtime, so the fixture has to carry an old timestamp itself.
+	stale, err := json.Marshal(PidFile{
+		SupervisorPid: os.Getpid(),
+		Services:      map[string]int{"api": 4242},
+		UpdatedAt:     time.Now().Add(-2 * maxOrphanAge),
+	})
+	if err != nil {
+		t.Fatalf("marshal services lock: %v", err)
+	}
+	if err := os.WriteFile(sup.servicesLockPath, stale, 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if got := sup.readServicesLock(); got != nil {
+		t.Errorf("readServicesLock() = %v, want nil for a stale file", got)
+	}
+	if _, err := os.Stat(sup.servicesLockPath); !os.IsNotExist(err) {
+		t.Error("stale services lock file should have been removed")
+	}
+}
+
+// TestStop_KeepsServicesLock guards the hand-off between two supervisor runs:
+// Stop writes the snapshot and must not delete it again.
+func TestStop_KeepsServicesLock(t *testing.T) {
+	sup := lockTestSupervisor(t)
+	sup.processes["api"] = &ProcessInfo{Name: "api", Pid: 4242}
+
+	if err := sup.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if _, err := os.Stat(sup.servicesLockPath); err != nil {
+		t.Errorf("services lock file should survive shutdown, got %v", err)
 	}
 }

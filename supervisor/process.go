@@ -21,7 +21,7 @@ import (
 // directory: the default location is shared with a running gorch instance, and
 // having tests write PID files there makes them flaky and can interfere with
 // the live supervisor's orphan cleanup.
-var ServicePidDir = "/tmp/gorch"
+var ServicePidDir = config.RuntimeDir
 
 // psInfo holds process info from a single ps call.
 type psInfo struct {

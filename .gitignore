@@ -6,16 +6,17 @@
 .idea/
 .vscode/
 
+.air.toml
 bin/
 logs/
+*.log
 **/dist/
 **/node_modules/
 test-output/
 tmp/
-webui/dist/
-webui/package-lock.json
+web/dist/
+web/package-lock.json
 
-*.log
 AGENTS.md
 CLAUDE.md
 gorch.toml

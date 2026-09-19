@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/azhai/gorch/config"
 	"github.com/spf13/cobra"
 )
 
@@ -109,11 +110,11 @@ After=network.target
 Type=simple
 ExecStart=%s start -c %s
 Restart=on-failure
-PIDFile=/var/run/gorch.pid
+PIDFile=%s
 
 [Install]
 WantedBy=%s
-`, binPath, cfgPath, wantedByTarget(user))
+`, binPath, cfgPath, config.DefaultPIDFile, wantedByTarget(user))
 
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0755); err != nil {
 		return fmt.Errorf("failed to create systemd dir: %w", err)
@@ -218,15 +219,19 @@ func installLaunchd(binPath, cfgPath string) error {
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/var/log/gorch/stdout.log</string>
+    <string>%s/stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/gorch/stderr.log</string>
+    <string>%s/stderr.log</string>
 </dict>
 </plist>
-`, launchdLabel, binPath, cfgPath)
+`, launchdLabel, binPath, cfgPath, config.DefaultLogDir, config.DefaultLogDir)
 
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0755); err != nil {
 		return fmt.Errorf("failed to create LaunchAgents dir: %w", err)
+	}
+	// launchd creates the log files but not their directory.
+	if err := config.EnsureRuntimeDir(); err != nil {
+		return err
 	}
 	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
 		return fmt.Errorf("failed to write plist: %w", err)

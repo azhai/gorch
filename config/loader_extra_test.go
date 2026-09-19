@@ -152,11 +152,14 @@ func TestLoad_WebDefaults(t *testing.T) {
 	if cfg.Web.WEB_ADDR != "127.0.0.1:8080" {
 		t.Errorf("WEB_ADDR = %q, want the default", cfg.Web.WEB_ADDR)
 	}
-	if cfg.PID_FILE != "/var/run/gorch.pid" {
+	if cfg.PID_FILE != DefaultPIDFile {
 		t.Errorf("PID_FILE = %q, want the default", cfg.PID_FILE)
 	}
-	if cfg.SERVICES_LOCK != "/var/run/gorch-services.lock" {
+	if cfg.SERVICES_LOCK != DefaultServicesLock {
 		t.Errorf("SERVICES_LOCK = %q, want the default", cfg.SERVICES_LOCK)
+	}
+	if cfg.LOG_DIR != DefaultLogDir {
+		t.Errorf("LOG_DIR = %q, want the default", cfg.LOG_DIR)
 	}
 }
 

@@ -3,6 +3,8 @@ package supervisor
 import (
 	"os"
 	"testing"
+
+	"github.com/azhai/gorch/config"
 )
 
 // TestMain redirects the PID-file directory to a private temporary directory so
@@ -23,6 +25,6 @@ func TestMain(m *testing.M) {
 
 	_ = os.RemoveAll(dir)
 	// Restore the default for any code that inspects it afterwards.
-	ServicePidDir = "/tmp/gorch"
+	ServicePidDir = config.RuntimeDir
 	os.Exit(code)
 }

@@ -1,4 +1,6 @@
-package web
+//go:build !noweb
+
+package server
 
 import (
 	"io/fs"
@@ -7,13 +9,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/azhai/gorch/webui"
+	"github.com/azhai/gorch/web"
 	"github.com/labstack/echo/v5"
 )
 
-// webuiDist is the embedded filesystem for the web UI.
-// It contains the built dist/ directory from webui/.
-var webuiDist = webui.DistFS
+// webDist is the embedded filesystem for the web UI.
+// It contains the built dist/ directory from web/.
+var webDist = web.DistFS
 
 var (
 	strippedFS fs.FS
@@ -24,7 +26,7 @@ var (
 // It uses sync.Once to ensure the filesystem is only created once.
 func getFileSystem() fs.FS {
 	fsOnce.Do(func() {
-		sub, err := fs.Sub(webuiDist, "dist")
+		sub, err := fs.Sub(webDist, "dist")
 		if err != nil {
 			panic("failed to create sub filesystem: " + err.Error())
 		}

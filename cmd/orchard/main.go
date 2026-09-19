@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/azhai/gorch/config"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +19,7 @@ var (
 	purge       bool
 )
 
-var defaultSocketPath = "/var/run/gorch.sock"
+var defaultSocketPath = config.DefaultSocketPath
 
 // setupLogger configures slog level based on GORCH_MODE env var.
 // dev mode → debug level; prod/empty → info level.

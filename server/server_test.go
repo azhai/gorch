@@ -1,4 +1,6 @@
-package web
+//go:build !noweb
+
+package server
 
 import (
 	"context"

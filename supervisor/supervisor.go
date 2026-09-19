@@ -13,8 +13,8 @@ import (
 	"github.com/azhai/gorch/config"
 	"github.com/azhai/gorch/cron"
 	"github.com/azhai/gorch/ipc"
+	"github.com/azhai/gorch/server"
 	"github.com/azhai/gorch/status"
-	"github.com/azhai/gorch/web"
 )
 
 const maxRestartCount = 3
@@ -27,9 +27,9 @@ type Supervisor struct {
 	cronProcs        map[string]*ProcessInfo // one-shot cron task processes, tracked separately from supervised services
 	logMgr           *log.Manager
 	statusCache      *status.Cache
-	webServer        *web.Server
+	webServer        *server.Server
 	ipcClosers       []func()
-	hub              *web.Hub
+	hub              *server.Hub
 	pidPath          string
 	servicesLockPath string
 	socketPath       string
@@ -64,17 +64,17 @@ func NewSupervisor(cfg *config.Config, opts ...Option) *Supervisor {
 		cronSched:        cron.NewScheduler(),
 		cronProcs:        make(map[string]*ProcessInfo),
 		statusCache:      status.NewCache(),
-		pidPath:          "/var/run/gorch.pid",
-		servicesLockPath: "/var/run/gorch-services.lock",
-		socketPath:       "/var/run/gorch.sock",
+		pidPath:          config.DefaultPIDFile,
+		servicesLockPath: config.DefaultServicesLock,
+		socketPath:       config.DefaultSocketPath,
 	}
 
 	for _, opt := range opts {
 		opt(s)
 	}
 
-	s.logMgr = log.NewManager("/var/log/gorch")
-	s.hub = web.NewHub()
+	s.logMgr = log.NewManager(config.DefaultLogDir)
+	s.hub = server.NewHub()
 
 	return s
 }
@@ -83,6 +83,12 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	defer cancel()
+
+	// Every runtime file (PID, lock, socket, logs) now lives under one
+	// directory that does not exist on a fresh machine — create it first.
+	if err := config.EnsureRuntimeDir(); err != nil {
+		return err
+	}
 
 	if err := AcquireLock(s.pidPath + ".lock"); err != nil {
 		return fmt.Errorf("another instance is running: %w", err)
@@ -124,11 +130,17 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		}
 	}
 
+	// Persist the PIDs of the services that are now running. The heartbeat loop
+	// below keeps refreshing this while gorch runs, so the file always reflects
+	// live processes and an unexpected exit can be followed by adoption instead
+	// of starting a second copy of each service.
+	s.writeServicesLock()
+
 	s.cronSched.Start()
 	slog.Info("cron scheduler started", "jobs", s.cronSched.JobCount())
 
 	if s.cfg.Web.WEB_ENABLE {
-		s.webServer = web.NewServer(s.cfg.Web.WEB_ADDR, s)
+		s.webServer = server.NewServer(s.cfg.Web.WEB_ADDR, s)
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
@@ -156,14 +168,19 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.uptimeTicker(ctx)
+		s.heartbeat(ctx)
 	}()
 
 	<-ctx.Done()
 	return s.Stop(context.Background())
 }
 
-func (s *Supervisor) uptimeTicker(ctx context.Context) {
+// heartbeat drives everything gorch has to refresh periodically: it pushes
+// uptime data to SSE clients and re-writes the services lock file so that its
+// timestamp stays fresh. The lock file must stay fresh because
+// readServicesLock treats anything older than maxOrphanAge as stale and
+// refuses to adopt the processes listed in it.
+func (s *Supervisor) heartbeat(ctx context.Context) {
 	// align to next 5-second boundary
 	now := time.Now()
 	next := now.Truncate(5 * time.Second).Add(5 * time.Second)
@@ -185,6 +202,7 @@ func (s *Supervisor) uptimeTicker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.hub.BroadcastUptimeTick(s.GetAllStatus())
+			s.writeServicesLock()
 		}
 	}
 }
@@ -228,7 +246,12 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	s.hub.Stop()
 	ReleaseLock(s.pidPath + ".lock")
 	os.Remove(s.pidPath)
-	os.Remove(s.servicesLockPath)
+	// Keep the services lock file written by writeServicesLock above: it records
+	// the PIDs of the services this supervisor was running so that the next
+	// startup can adopt the ones that are still alive (see readServicesLock and
+	// startService). Removing it here cancelled that write — the file was
+	// created and deleted within the same shutdown, so it was never observable
+	// and the adopt-on-restart path could never fire.
 	os.Remove(s.socketPath)
 
 	// Clean up the PID files of the services this supervisor manages.
@@ -463,7 +486,7 @@ func (s *Supervisor) GetCronScheduler() *cron.Scheduler {
 	return s.cronSched
 }
 
-func (s *Supervisor) GetHub() *web.Hub {
+func (s *Supervisor) GetHub() *server.Hub {
 	return s.hub
 }
 
@@ -960,8 +983,15 @@ func (s *Supervisor) cleanupOrphans() {
 	}
 }
 
-// writeServicesLock records all running service PIDs to the lock file.
-// Called on graceful shutdown so the next startup can adopt live processes.
+// writeServicesLock snapshots the PIDs of the running services into the lock
+// file. It is called at startup, refreshed by the heartbeat loop while gorch
+// runs, and called once more on shutdown.
+//
+// Keeping the snapshot current is what makes the file useful: readServicesLock
+// ignores files older than maxOrphanAge, so a file written only at startup
+// would stop identifying adoptable processes as soon as gorch had been running
+// for longer than that. The snapshot is written even when nothing is running so
+// the file always mirrors the real state instead of going stale.
 func (s *Supervisor) writeServicesLock() {
 	s.mu.RLock()
 	services := make(map[string]int)
@@ -971,10 +1001,6 @@ func (s *Supervisor) writeServicesLock() {
 		}
 	}
 	s.mu.RUnlock()
-
-	if len(services) == 0 {
-		return
-	}
 
 	if err := WritePidFile(s.servicesLockPath, os.Getpid(), services); err != nil {
 		slog.Warn("failed to write services lock file", "error", err)

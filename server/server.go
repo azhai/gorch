@@ -1,4 +1,6 @@
-package web
+//go:build !noweb
+
+package server
 
 import (
 	"bytes"
@@ -8,29 +10,9 @@ import (
 	"strings"
 
 	gototp "github.com/azhai/go-totp"
-	"github.com/azhai/gobus/log"
-	"github.com/azhai/gorch/config"
-	"github.com/azhai/gorch/cron"
-	"github.com/azhai/gorch/status"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 )
-
-type SupervisorProvider interface {
-	GetStatus(name string) (status.ServiceStatus, bool)
-	GetAllStatus() map[string]status.ServiceStatus
-	GetConfig() *config.Config
-	GetLogManager() *log.Manager
-	GetCronScheduler() *cron.Scheduler
-	GetHub() *Hub
-	StartService(ctx context.Context, name string) error
-	StopService(ctx context.Context, name string) error
-	RestartService(ctx context.Context, name string) error
-	UpdateServiceConfig(name string, svc config.ServiceConfig) error
-	CreateService(name string, svc config.ServiceConfig) error
-	DeleteService(name string) error
-	SaveConfig() error
-}
 
 type Server struct {
 	app        *echo.Echo

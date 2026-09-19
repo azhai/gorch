@@ -10,7 +10,9 @@ Use `-c /path/to/config.toml` to specify a different path.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `LOG_DIR` | — | Default log directory; services without explicit `STDOUT`/`STDERR` will use `<LOG_DIR>/<name>.out.log` and `<LOG_DIR>/<name>.err.log` |
+| `LOG_DIR` | `/tmp/gorch/logs` | Default log directory; services without explicit `STDOUT`/`STDERR` will use `<LOG_DIR>/<name>.out.log` and `<LOG_DIR>/<name>.err.log` |
+| `PID_FILE` | `/tmp/gorch/gorch.pid` | Supervisor PID file |
+| `SERVICES_LOCK` | `/tmp/gorch/gorch-services.lock` | Records managed service PIDs so a restart can adopt running processes |
 
 ## Web UI Fields
 
@@ -101,7 +103,7 @@ Cron services cannot be started manually — they run on schedule. Overlapping r
 ## Full Example
 
 ```toml
-LOG_DIR = "/var/log/gorch"
+LOG_DIR = "/tmp/gorch/logs"
 
 [web]
 WEB_ENABLE = true
@@ -116,8 +118,8 @@ WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
 CHECK_PORT = 8000
-STDOUT = "/var/log/api.stdout.log"
-STDERR = "/var/log/api.stderr.log"
+STDOUT = "/tmp/gorch/logs/api.stdout.log"
+STDERR = "/tmp/gorch/logs/api.stderr.log"
 DEPENDS_ON = ["redis"]
 CRON = "0 */30 * * * *"
 ENV_VARS = { DEBUG = "true", REDIS_URL = "redis://localhost:6379/0" }
@@ -126,7 +128,7 @@ ENV_VARS = { DEBUG = "true", REDIS_URL = "redis://localhost:6379/0" }
 EXEC_CMD = "redis-server /etc/redis/redis.conf"
 RESTART_POLICY = "always"
 BACK_OFF = 3
-STDOUT = "/var/log/redis.log"
+STDOUT = "/tmp/gorch/logs/redis.log"
 
 [services.nginx]
 EXEC_CMD = "nginx -g 'daemon off;'"
@@ -152,8 +154,8 @@ RESTART_CMD = './sbin/angie -p /opt/wares/angie -s reload'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
 WORK_DIR = '/opt/wares/angie'
-STDOUT = '/var/log/gorch/angie.out.log'
-STDERR = '/var/log/gorch/angie.err.log'
+STDOUT = '/tmp/gorch/logs/angie.out.log'
+STDERR = '/tmp/gorch/logs/angie.err.log'
 ```
 
 **Why PID doesn't change on restart** — When `RESTART_CMD` is set, `gorch restart` runs the reload command (e.g. `nginx -s reload`) instead of stop+start. The master process never exits, so its PID stays the same. Workers are replaced gracefully without dropping connections.
@@ -185,8 +187,8 @@ WORK_DIR = '/opt/sites/myapp'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
 CHECK_PORT = 9000
-STDOUT = '/var/log/gorch/myapp.out.log'
-STDERR = '/var/log/gorch/myapp.err.log'
+STDOUT = '/tmp/gorch/logs/myapp.out.log'
+STDERR = '/tmp/gorch/logs/myapp.err.log'
 ```
 
 ### Static File Server (weblite)
@@ -197,8 +199,8 @@ EXEC_CMD = '/opt/wares/gorch/weblite -p 2100'
 WORK_DIR = '/opt/repos/mine_world'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 8
-STDOUT = '/var/log/gorch/mine_world.out.log'
-STDERR = '/var/log/gorch/mine_world.err.log'
+STDOUT = '/tmp/gorch/logs/mine_world.out.log'
+STDERR = '/tmp/gorch/logs/mine_world.err.log'
 ```
 
 ### Godoc
@@ -210,8 +212,8 @@ WORK_DIR = '/Users/ryan/gopath'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
 CHECK_PORT = 6060
-STDOUT = '/var/log/gorch/godoc.out.log'
-STDERR = '/var/log/gorch/godoc.err.log'
+STDOUT = '/tmp/gorch/logs/godoc.out.log'
+STDERR = '/tmp/gorch/logs/godoc.err.log'
 ```
 
 ### Cron Job (scheduled task)
@@ -223,8 +225,8 @@ Services with `CRON` run on schedule, not continuously. gorch skips overlapping 
 EXEC_CMD = './backup.sh'
 WORK_DIR = '/opt/backup'
 CRON = '0 0 2 * * *'  # 2:00 AM every day
-STDOUT = '/var/log/gorch/backup.out.log'
-STDERR = '/var/log/gorch/backup.err.log'
+STDOUT = '/tmp/gorch/logs/backup.out.log'
+STDERR = '/tmp/gorch/logs/backup.err.log'
 ```
 
 ## Restart Behavior

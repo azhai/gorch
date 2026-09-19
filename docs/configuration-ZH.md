@@ -10,7 +10,9 @@ TOML 格式。默认路径：当前目录下的 `gorch.toml`。
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `LOG_DIR` | — | 默认日志目录；未指定 `STDOUT`/`STDERR` 的服务将使用 `<LOG_DIR>/<名称>.out.log` 和 `<LOG_DIR>/<名称>.err.log` |
+| `LOG_DIR` | `/tmp/gorch/logs` | 默认日志目录；未指定 `STDOUT`/`STDERR` 的服务将使用 `<LOG_DIR>/<名称>.out.log` 和 `<LOG_DIR>/<名称>.err.log` |
+| `PID_FILE` | `/tmp/gorch/gorch.pid` | supervisor 的 PID 文件 |
+| `SERVICES_LOCK` | `/tmp/gorch/gorch-services.lock` | 记录被管理服务进程的 PID，重启后用于接管进程 |
 
 ## Web 界面配置
 
@@ -101,7 +103,7 @@ Cron 服务不能手动启动，按计划自动执行。重叠执行会被检测
 ## 完整示例
 
 ```toml
-LOG_DIR = "/var/log/gorch"
+LOG_DIR = "/tmp/gorch/logs"
 
 [web]
 WEB_ENABLE = true
@@ -116,8 +118,8 @@ WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
 CHECK_PORT = 8000
-STDOUT = "/var/log/api.stdout.log"
-STDERR = "/var/log/api.stderr.log"
+STDOUT = "/tmp/gorch/logs/api.stdout.log"
+STDERR = "/tmp/gorch/logs/api.stderr.log"
 DEPENDS_ON = ["redis"]
 CRON = "0 */30 * * * *"
 ENV_VARS = { DEBUG = "true", REDIS_URL = "redis://localhost:6379/0" }
@@ -126,7 +128,7 @@ ENV_VARS = { DEBUG = "true", REDIS_URL = "redis://localhost:6379/0" }
 EXEC_CMD = "redis-server /etc/redis/redis.conf"
 RESTART_POLICY = "always"
 BACK_OFF = 3
-STDOUT = "/var/log/redis.log"
+STDOUT = "/tmp/gorch/logs/redis.log"
 
 [services.nginx]
 EXEC_CMD = "nginx -g 'daemon off;'"
@@ -152,8 +154,8 @@ RESTART_CMD = './sbin/angie -p /opt/wares/angie -s reload'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
 WORK_DIR = '/opt/wares/angie'
-STDOUT = '/var/log/gorch/angie.out.log'
-STDERR = '/var/log/gorch/angie.err.log'
+STDOUT = '/tmp/gorch/logs/angie.out.log'
+STDERR = '/tmp/gorch/logs/angie.err.log'
 ```
 
 **为什么重启后 PID 不变** — 设置了 `RESTART_CMD` 时，`gorch restart` 执行的是重载命令（如 `nginx -s reload`），而不是 stop+start。master 进程从未退出，所以 PID 保持不变。worker 进程被优雅地替换，不会中断连接。
@@ -185,8 +187,8 @@ WORK_DIR = '/opt/sites/myapp'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
 CHECK_PORT = 9000
-STDOUT = '/var/log/gorch/myapp.out.log'
-STDERR = '/var/log/gorch/myapp.err.log'
+STDOUT = '/tmp/gorch/logs/myapp.out.log'
+STDERR = '/tmp/gorch/logs/myapp.err.log'
 ```
 
 ### 静态文件服务器（weblite）
@@ -197,8 +199,8 @@ EXEC_CMD = '/opt/wares/gorch/weblite -p 2100'
 WORK_DIR = '/opt/repos/mine_world'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 8
-STDOUT = '/var/log/gorch/mine_world.out.log'
-STDERR = '/var/log/gorch/mine_world.err.log'
+STDOUT = '/tmp/gorch/logs/mine_world.out.log'
+STDERR = '/tmp/gorch/logs/mine_world.err.log'
 ```
 
 ### Godoc
@@ -210,8 +212,8 @@ WORK_DIR = '/Users/ryan/gopath'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
 CHECK_PORT = 6060
-STDOUT = '/var/log/gorch/godoc.out.log'
-STDERR = '/var/log/gorch/godoc.err.log'
+STDOUT = '/tmp/gorch/logs/godoc.out.log'
+STDERR = '/tmp/gorch/logs/godoc.err.log'
 ```
 
 ### Cron 定时任务
@@ -223,8 +225,8 @@ STDERR = '/var/log/gorch/godoc.err.log'
 EXEC_CMD = './backup.sh'
 WORK_DIR = '/opt/backup'
 CRON = '0 0 2 * * *'  # 每天凌晨 2 点
-STDOUT = '/var/log/gorch/backup.out.log'
-STDERR = '/var/log/gorch/backup.err.log'
+STDOUT = '/tmp/gorch/logs/backup.out.log'
+STDERR = '/tmp/gorch/logs/backup.err.log'
 ```
 
 ## 重启行为

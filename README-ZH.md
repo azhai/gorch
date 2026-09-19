@@ -23,12 +23,15 @@ gorch 非常适合 Web 应用、API 服务、定时任务、无状态守护进�
 
 ## 二进制文件
 
-本仓库构建两个二进制文件：
+本仓库构建三个二进制文件：
 
 | 二进制 | 功能 |
 |--------|------|
-| **gorch** | 进程管理工具 — 管理常驻服务、定时任务，提供 CLI 和 Web 界面 |
+| **gorch** | 进程管理工具 — 管理常驻服务、定时任务，提供 CLI **和** Web 界面 |
+| **gorch-noweb** | 同一个 supervisor，用 `-tags noweb` 构建 — 只有 CLI，不含 HTTP 服务器和嵌入的 SPA |
 | **weblite** | 轻量级静态文件服务器 — 零配置，支持目录列表，直接 serve 一个目录 |
+
+`gorch` 与 `gorch-noweb` 来自同一份源码（`./cmd/orchard`）；`make noweb` 可以在不构建前端的情况下单独产出后者。
 
 ## 安装
 
@@ -36,7 +39,7 @@ gorch 非常适合 Web 应用、API 服务、定时任务、无状态守护进�
 
 ```sh
 export PATH="$GOPATH/bin:$PATH"
-go install github.com/azhai/gorch@latest
+go install github.com/azhai/gorch/cmd/orchard@latest
 ```
 
 ### 安装为系统服务
@@ -67,7 +70,7 @@ EXEC_CMD = "python app.py"
 生产环境示例：
 
 ```toml
-LOG_DIR = '/var/log/gorch'
+LOG_DIR = '/tmp/gorch/logs'
 
 [web]
 WEB_ENABLE = true
@@ -81,8 +84,8 @@ WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
 CHECK_PORT = 8000
-STDOUT = "/var/log/api.stdout.log"
-STDERR = "/var/log/api.stderr.log"
+STDOUT = "/tmp/gorch/logs/api.stdout.log"
+STDERR = "/tmp/gorch/logs/api.stderr.log"
 DEPENDS_ON = ["redis"]
 
 [services.redis]
@@ -141,6 +144,23 @@ weblite -d ./public -p 8000
 ```
 
 在 8000 端口 serve `./public` 目录，自动生成目录列表。
+
+## 运行时文件
+
+gorch 把自己的全部状态都放在同一个目录 `/tmp/gorch` 下：
+
+| 路径 | 用途 |
+|------|------|
+| `/tmp/gorch/gorch.pid` | supervisor 的 PID 文件 |
+| `/tmp/gorch/gorch-services.lock` | 被管理服务进程的 PID（重启后用于接管进程） |
+| `/tmp/gorch/gorch.sock` | CLI 与 supervisor 通信的 Unix socket |
+| `/tmp/gorch/<名称>.pid` | 单个服务的 PID 文件 |
+| `/tmp/gorch/logs/<名称>.out.log` | 服务标准输出（由 `LOG_DIR` 决定） |
+| `/tmp/gorch/logs/<名称>.err.log` | 服务标准错误（由 `LOG_DIR` 决定） |
+
+可通过全局字段 `LOG_DIR`、`PID_FILE`、`SERVICES_LOCK` 覆盖。
+
+> **注意：** `/tmp` 在系统重启后会被清空（macOS 还会定期清理），因此日志不会保留。如需长期保存，请把 `LOG_DIR` 指向持久化目录。
 
 ## 文档
 

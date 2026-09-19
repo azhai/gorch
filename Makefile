@@ -1,28 +1,29 @@
 # gorch Makefile
 #
-# Targets:
-#   make one     — local build (APP + all COMMANDS)
-#   make build   — cross-compile for darwin/linux/windows (arm64/amd64)
-#   make all     — clean → one → build (full pipeline)
-#   make front   — build frontend only
-#   make run     — build frontend + go run
-#   make dev     — hot-reload dev server (air + vite dev)
-#   make clean   — remove build artifacts
-#   make test    — run Go tests
-#   make lint    — run golangci-lint
-#   make tidy    — run go mod tidy
+# Two binaries are produced from the same source (./cmd/orchard):
+#   gorch       — Echo HTTP server + the embedded React SPA from $(ADMIN_DIR)
+#   orchard     — built with -tags noweb: no HTTP server, no embedded SPA
 #
-# Test:
-#   ./test_makefile.sh
+# Layout:
+#   cmd/orchard — gorch CLI/supervisor (package main)
+#   cmd/weblite — static file server
+#   server/     — Go HTTP layer (Echo, REST API, SSE, auth)
+#   web/        — React SPA (embedded as github.com/azhai/gorch/web)
 
 # ── Project config ────────────────────────────────────────
 
-# main binary name (built from ./)
+# main package source directory
+APP_DIR   = ./cmd/orchard
+# binary with the web UI baked in
 APP       = gorch
+# binary without the web UI
+APP_LITE  = orchard
+# build tag that strips the web layer (server/ + embedded SPA)
+NOWEB_TAG = noweb
 # frontend directory
-ADMIN_DIR = webui
-# auto-discover cmd/ subdirs
-COMMANDS  := $(notdir $(patsubst %/.,%,$(wildcard cmd/*/.)))
+ADMIN_DIR = web
+# auto-discover cmd/ subdirs, excluding the main app directory
+COMMANDS  := $(filter-out orchard,$(notdir $(patsubst %/.,%,$(wildcard cmd/*/.))))
 
 # ── Build flags ───────────────────────────────────────────
 
@@ -32,33 +33,45 @@ GOBUILD    = go build $(RELEASE)
 
 # ── Targets ───────────────────────────────────────────────
 
-.PHONY: one all front build run dev clean test lint tidy
+.PHONY: one noweb all front build run dev clean test lint tidy
 
 ## one: local single-platform build (CGO disabled, current OS/ARCH)
 one: front
-	@echo "Build $(APP) (local) ..."
+	@echo "Build $(APP) + $(APP_LITE) (local) ..."
 	mkdir -p bin
-	CGO_ENABLED=0 $(GOBUILD) -o bin/$(APP) ./
+	CGO_ENABLED=0 $(GOBUILD) -o bin/$(APP) $(APP_DIR)
+	CGO_ENABLED=0 $(GOBUILD) -tags $(NOWEB_TAG) -o bin/$(APP_LITE) $(APP_DIR)
 	@for cmd in $(COMMANDS); do \
 		CGO_ENABLED=0 $(GOBUILD) -o bin/$$cmd ./cmd/$$cmd; \
 	done
 
+## noweb: build only the web-less gorch (skips the frontend build)
+noweb:
+	@echo "Build $(APP_LITE) (local, -tags $(NOWEB_TAG)) ..."
+	mkdir -p bin
+	CGO_ENABLED=0 $(GOBUILD) -tags $(NOWEB_TAG) -o bin/$(APP_LITE) $(APP_DIR)
+
 ## all: full pipeline — clean, then local build, then cross-compile
 all: clean one build
 
-## build: cross-compile APP + all COMMANDS for 5 platforms
+## build: cross-compile gorch, gorch-noweb, and all COMMANDS
 build: front
 	@echo "Cross-compiling ..."
 	mkdir -p bin
-	@for target in $(APP) $(COMMANDS); do \
-		if [ "$$target" = "$(APP)" ]; then src=.; else src=./cmd/$$target; fi; \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GOBUILD) -o bin/$$target-$(VERSION).darwin-arm64 $$src && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).darwin-amd64 $$src && \
-		CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 $(GOBUILD) -o bin/$$target-$(VERSION).linux-arm64  $$src && \
-		CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).linux-amd64  $$src; \
-		if [ "$$target" != "$(APP)" ]; then \
-			CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -o bin/$$target-$(VERSION).exe  $$src; \
-		fi; \
+	@for target in $(APP) $(APP_LITE); do \
+		tags=""; \
+		if [ "$$target" = "$(APP_LITE)" ]; then tags="-tags $(NOWEB_TAG)"; fi; \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GOBUILD) $$tags -o bin/$$target-$(VERSION).darwin-arm64 $(APP_DIR) && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GOBUILD) $$tags -o bin/$$target-$(VERSION).darwin-amd64 $(APP_DIR) && \
+		CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 $(GOBUILD) $$tags -o bin/$$target-$(VERSION).linux-arm64  $(APP_DIR) && \
+		CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 $(GOBUILD) $$tags -o bin/$$target-$(VERSION).linux-amd64  $(APP_DIR); \
+	done
+	@for cmd in $(COMMANDS); do \
+		CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 $(GOBUILD) -o bin/$$cmd-$(VERSION).darwin-arm64 ./cmd/$$cmd && \
+		CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 $(GOBUILD) -o bin/$$cmd-$(VERSION).darwin-amd64 ./cmd/$$cmd && \
+		CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 $(GOBUILD) -o bin/$$cmd-$(VERSION).linux-arm64  ./cmd/$$cmd && \
+		CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 $(GOBUILD) -o bin/$$cmd-$(VERSION).linux-amd64  ./cmd/$$cmd && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -o bin/$$cmd-$(VERSION).exe          ./cmd/$$cmd; \
 	done
 	@echo "✅ Build success."
 
@@ -67,9 +80,9 @@ front:
 	@echo "Build frontend ..."
 	cd $(ADMIN_DIR) && npm run build
 
-## run: build frontend then run main with go run
+## run: build frontend then run gorch with go run
 run: front
-	go run ./
+	go run $(APP_DIR)
 
 ## dev: start hot-reload backend (air) + frontend dev server (vite)
 dev:
@@ -83,9 +96,10 @@ clean:
 	rm -rf bin/* tmp/* $(ADMIN_DIR)/dist
 	@echo "✅ Clean complete."
 
-## test: run Go tests with verbose output (52 tests across 5 packages)
+## test: run Go tests (both build variants must compile)
 test:
 	go test ./... -v
+	go vet -tags $(NOWEB_TAG) ./...
 
 ## lint: run golangci-lint on entire project
 lint:

@@ -1,4 +1,4 @@
-LOG_DIR = '/var/log'
+LOG_DIR = '/tmp/gorch/logs'
 
 [services]
 [services.api]
@@ -8,16 +8,16 @@ DEPENDS_ON = ["redis"]
 ENV_VARS = { DEBUG = "true", REDIS_URL = "redis://localhost:6379/0" }
 EXEC_CMD = "python3 manage.py runserver 0.0.0.0:8000"
 RESTART_POLICY = "on-failure"
-STDOUT = "/var/log/api.out.log"
-STDERR = "/var/log/api.err.log"
+STDOUT = "/tmp/gorch/logs/api.out.log"
+STDERR = "/tmp/gorch/logs/api.err.log"
 WORK_DIR = "/home/ryan/app/backend"
 
 [services.godoc]
 BACK_OFF = 3
 EXEC_CMD = './bin/godoc -http=127.0.0.1:6060'
 RESTART_POLICY = 'on-failure'
-STDERR = '/var/log/godoc.err.log'
-STDOUT = '/var/log/godoc.out.log'
+STDERR = '/tmp/gorch/logs/godoc.err.log'
+STDOUT = '/tmp/gorch/logs/godoc.out.log'
 WORK_DIR = '/home/ryan/gopath'
 
 [services.nginx]
@@ -31,13 +31,13 @@ RESTART_POLICY = "always"
 BACK_OFF = 3
 EXEC_CMD = "redis-server /etc/redis/redis.conf"
 RESTART_POLICY = "always"
-STDOUT = "/var/log/redis.log"
+STDOUT = "/tmp/gorch/logs/redis.log"
 
 [services.test]
 CRON = "30 */5 9-17 * * *"
 EXEC_CMD = "/bin/date >> /tmp/time.log"
-STDERR = '/var/log/test.err.log'
-STDOUT = '/var/log/test.out.log'
+STDERR = '/tmp/gorch/logs/test.err.log'
+STDOUT = '/tmp/gorch/logs/test.out.log'
 
 [web]
 WEB_AUTH = true

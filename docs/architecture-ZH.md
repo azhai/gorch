@@ -27,10 +27,26 @@ CLI ──► Unix Socket IPC ──► Supervisor ──► Echo Web Server
 缓存服务状态快照，用于快速查询和 SSE 更新推送。
 
 ### IPC Layer（进程间通信层）
-基于 Unix Socket 的进程间通信。CLI 命令通过 `/var/run/gorch.sock` 与运行中的 supervisor 通信。
+基于 Unix Socket 的进程间通信。CLI 命令通过 `/tmp/gorch/gorch.sock` 与运行中的 supervisor 通信。
 
-### Web Server（Web 服务器）
+### Web Server（Web 服务器，`server/`）
 基于 Echo 的 HTTP 服务器，内置 React SPA。提供 REST API 和实时 SSE 更新。
+
+## 目录结构
+
+| 路径 | 内容 |
+|------|------|
+| `cmd/orchard` | `package main` — CLI 与 supervisor 入口（构建产物为 `gorch`） |
+| `cmd/weblite` | 静态文件服务器 |
+| `supervisor/` | 进程生命周期、定时调度、状态缓存、IPC 服务端 |
+| `server/` | HTTP 层：REST API、SSE Hub、鉴权、嵌入 SPA 的静态服务 |
+| `web/` | React SPA；`embed.go` 把它的 `dist/` 嵌入二进制 |
+| `config/`、`status/`、`ipc/`、`cron/`、`common/` | 支撑包 |
+
+`cmd/orchard` 会被构建两次：
+
+- `gorch` — 默认构建，包含 Echo 服务器和嵌入的 SPA。
+- `gorch-noweb` — `go build -tags noweb ./cmd/orchard`，此时 `server/` 被替换成空实现存根，Echo 与 SPA 都不参与编译，二进制体积约为原来的 1/3。
 
 ## 技术栈
 

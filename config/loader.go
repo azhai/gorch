@@ -189,6 +189,10 @@ func (c *Config) Save(path string) error {
 }
 
 func validateAndFillDefaults(cfg *Config, configDir string) error {
+	if cfg.LOG_DIR == "" {
+		cfg.LOG_DIR = DefaultLogDir
+	}
+
 	for name, svc := range cfg.Services {
 		if svc.EXEC_CMD == "" {
 			return fmt.Errorf("service '%s' missing required field: EXEC_CMD", name)
@@ -209,13 +213,11 @@ func validateAndFillDefaults(cfg *Config, configDir string) error {
 		}
 
 		// Fill default log paths from LOG_DIR
-		if cfg.LOG_DIR != "" {
-			if svc.STDOUT == "" {
-				svc.STDOUT = filepath.Join(cfg.LOG_DIR, name+".out.log")
-			}
-			if svc.STDERR == "" {
-				svc.STDERR = filepath.Join(cfg.LOG_DIR, name+".err.log")
-			}
+		if svc.STDOUT == "" {
+			svc.STDOUT = filepath.Join(cfg.LOG_DIR, name+".out.log")
+		}
+		if svc.STDERR == "" {
+			svc.STDERR = filepath.Join(cfg.LOG_DIR, name+".err.log")
 		}
 
 		cfg.Services[name] = svc
@@ -235,10 +237,10 @@ func validateAndFillDefaults(cfg *Config, configDir string) error {
 	}
 
 	if cfg.PID_FILE == "" {
-		cfg.PID_FILE = "/var/run/gorch.pid"
+		cfg.PID_FILE = DefaultPIDFile
 	}
 	if cfg.SERVICES_LOCK == "" {
-		cfg.SERVICES_LOCK = "/var/run/gorch-services.lock"
+		cfg.SERVICES_LOCK = DefaultServicesLock
 	}
 
 	return nil

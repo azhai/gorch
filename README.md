@@ -23,12 +23,15 @@ gorch is great for web apps, API servers, cron jobs, and stateless daemons. It i
 
 ## Binaries
 
-Two binaries are built from this repo:
+Three binaries are built from this repo:
 
 | Binary | What it does |
 |--------|-------------|
-| **gorch** | Process supervisor — manages long-running services, cron jobs, with CLI and Web UI |
+| **gorch** | Process supervisor — manages long-running services and cron jobs, with CLI **and** Web UI |
+| **gorch-noweb** | Same supervisor built with `-tags noweb` — CLI only, no HTTP server and no embedded SPA |
 | **weblite** | Lightweight static file server — serves a directory with directory listing, zero config |
+
+Both `gorch` and `gorch-noweb` come from the same source (`./cmd/orchard`); `make noweb` builds the latter without touching the frontend.
 
 ## Install
 
@@ -36,7 +39,7 @@ Two binaries are built from this repo:
 
 ```sh
 export PATH="$GOPATH/bin:$PATH"
-go install github.com/azhai/gorch@latest
+go install github.com/azhai/gorch/cmd/orchard@latest
 ```
 
 ### Install as System Service
@@ -67,7 +70,7 @@ EXEC_CMD = "python app.py"
 Real-world example:
 
 ```toml
-LOG_DIR = '/var/log/gorch'
+LOG_DIR = '/tmp/gorch/logs'
 
 [web]
 WEB_ENABLE = true
@@ -81,8 +84,8 @@ WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
 CHECK_PORT = 8000
-STDOUT = "/var/log/api.stdout.log"
-STDERR = "/var/log/api.stderr.log"
+STDOUT = "/tmp/gorch/logs/api.stdout.log"
+STDERR = "/tmp/gorch/logs/api.stderr.log"
 DEPENDS_ON = ["redis"]
 
 [services.redis]
@@ -141,6 +144,23 @@ weblite -d ./public -p 8000
 ```
 
 Serves the `./public` directory on port 8000 with auto-generated directory listings.
+
+## Runtime Files
+
+gorch keeps all of its own state in one directory, `/tmp/gorch`:
+
+| Path | Purpose |
+|------|---------|
+| `/tmp/gorch/gorch.pid` | Supervisor PID file |
+| `/tmp/gorch/gorch-services.lock` | PIDs of managed services (used to adopt processes across restarts) |
+| `/tmp/gorch/gorch.sock` | Unix socket for CLI ↔ supervisor IPC |
+| `/tmp/gorch/<name>.pid` | Per-service PID file |
+| `/tmp/gorch/logs/<name>.out.log` | Service stdout (from `LOG_DIR`) |
+| `/tmp/gorch/logs/<name>.err.log` | Service stderr (from `LOG_DIR`) |
+
+Override them with the global `LOG_DIR`, `PID_FILE` and `SERVICES_LOCK` fields.
+
+> **Note:** `/tmp` is cleared on reboot (and periodically on macOS), so logs do not survive a restart. Point `LOG_DIR` at a persistent directory if you need to keep them.
 
 ## Documentation
 
