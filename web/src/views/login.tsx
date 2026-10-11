@@ -1,16 +1,13 @@
-import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { setToken, isAuthEnabled, getToken } from '../api/authStore'
+import m from 'mithril'
 import { API_BASE } from '../api/config'
-import { useI18n, Lang } from '../i18n/I18nProvider'
-import { useTheme, ColorTheme } from '../i18n/ThemeProvider'
+import { getToken, isAuthEnabled, setToken } from '../api/authStore'
+import { i18n, type Lang } from '../state/i18n'
+import { theme, type ThemeOption } from '../state/theme'
 
 const LANG_OPTIONS: { value: Lang; label: string }[] = [
   { value: 'en', label: 'English' },
   { value: 'zh-CN', label: '简体中文' },
 ]
-
-type ThemeOption = 'orange' | 'mint' | 'pinkblue' | 'monet' | 'dark'
 
 const THEME_OPTIONS: { value: ThemeOption; labelKey: string }[] = [
   { value: 'orange', labelKey: 'theme.orange' },
@@ -20,234 +17,212 @@ const THEME_OPTIONS: { value: ThemeOption; labelKey: string }[] = [
   { value: 'dark', labelKey: 'theme.dark' },
 ]
 
-export default function LoginView() {
-  const navigate = useNavigate()
-  const { t, lang, setLang } = useI18n()
-  const { colorTheme, mode, setColorTheme, setMode } = useTheme()
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [totpCode, setTotpCode] = useState('')
-  const [step, setStep] = useState<'credentials' | 'totp'>('credentials')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
-  const currentTheme = useMemo<ThemeOption>(() => {
-    if (mode === 'dark') return 'dark'
-    return colorTheme
-  }, [colorTheme, mode])
-
-  const handleThemeChange = (value: ThemeOption) => {
-    if (value === 'dark') {
-      setMode('dark')
-    } else {
-      setMode('light')
-      setColorTheme(value as ColorTheme)
-    }
+export const LoginView: m.Component = (() => {
+  const state = {
+    username: '',
+    password: '',
+    totpCode: '',
+    step: 'credentials' as 'credentials' | 'totp',
+    loading: false,
+    error: null as string | null,
   }
 
-  useEffect(() => {
-    if (isAuthEnabled() && getToken()) {
-      navigate('/')
-    }
-  }, [navigate])
+  if (isAuthEnabled() && getToken()) {
+    m.route.set('/')
+  }
 
-  const handleCredentialsSubmit = async (e: React.FormEvent) => {
+  async function handleCredentialsSubmit(e: Event): Promise<void> {
     e.preventDefault()
-
-    if (!username.trim() || !password.trim()) {
-      setError(t('login.enterCredentials'))
+    if (!state.username.trim() || !state.password.trim()) {
+      state.error = i18n.t('login.enterCredentials')
       return
     }
 
-    setLoading(true)
-    setError(null)
+    state.loading = true
+    state.error = null
 
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: state.username, password: state.password }),
       })
-
       const json = await res.json()
 
       if (res.ok && json.success) {
         if (json.data?.requireTotp) {
-          setStep('totp')
+          state.step = 'totp'
         } else if (json.data?.token) {
           setToken(json.data.token)
-          navigate('/')
+          m.route.set('/')
         }
       } else if (res.status === 401) {
-        setError(t('login.invalidCredentials'))
+        state.error = i18n.t('login.invalidCredentials')
       } else {
-        setError(json.message || t('login.networkError'))
+        state.error = json.message || i18n.t('login.networkError')
       }
     } catch {
-      setError(t('login.networkError'))
+      state.error = i18n.t('login.networkError')
     } finally {
-      setLoading(false)
+      state.loading = false
     }
   }
 
-  const handleTotpSubmit = async (e: React.FormEvent) => {
+  async function handleTotpSubmit(e: Event): Promise<void> {
     e.preventDefault()
-
-    if (!totpCode.trim() || totpCode.length !== 6) {
-      setError(t('login.enter6DigitCode'))
+    if (state.totpCode.length !== 6) {
+      state.error = i18n.t('login.enter6DigitCode')
       return
     }
 
-    setLoading(true)
-    setError(null)
+    state.loading = true
+    state.error = null
 
     try {
       const res = await fetch(`${API_BASE}/auth/login/totp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, code: totpCode }),
+        body: JSON.stringify({ username: state.username, code: state.totpCode }),
       })
-
       const json = await res.json()
 
       if (res.ok && json.success && json.data?.token) {
         setToken(json.data.token)
-        navigate('/')
+        m.route.set('/')
       } else {
-        setError(json.message || t('login.invalidCode'))
+        state.error = json.message || i18n.t('login.invalidCode')
       }
     } catch {
-      setError(t('login.networkError'))
+      state.error = i18n.t('login.networkError')
     } finally {
-      setLoading(false)
+      state.loading = false
     }
   }
 
-  const handleBack = () => {
-    setStep('credentials')
-    setTotpCode('')
-    setError(null)
+  function handleBack(): void {
+    state.step = 'credentials'
+    state.totpCode = ''
+    state.error = null
   }
 
-  return (
-    <div className="min-h-screen bg-macaron-cream dark:bg-gray-900 flex items-center justify-center py-12 px-4 transition-colors">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-macaron-peach dark:border-gray-700 w-full max-w-md p-8 transition-colors">
-        <h1 className="text-2xl font-semibold text-gray-800 dark:text-gray-100 text-center mb-6">{t('login.title')}</h1>
+  return {
+    view() {
+      const busy = state.loading
 
-        <div className="flex flex-wrap items-center justify-end gap-3 mb-4">
-          <div className="flex items-center gap-2">
-            <label htmlFor="login-lang" className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-              {t('login.language')}
-            </label>
-            <select
-              id="login-lang"
-              value={lang}
-              onChange={(e) => setLang(e.target.value as Lang)}
-              className="text-xs border border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-macaron-peach"
-            >
-              {LANG_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <label htmlFor="login-theme" className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-              {t('login.theme')}
-            </label>
-            <select
-              id="login-theme"
-              value={currentTheme}
-              onChange={(e) => handleThemeChange(e.target.value as ThemeOption)}
-              className="text-xs border border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-macaron-peach"
-            >
-              {THEME_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {t(opt.labelKey)}
-                </option>
-              ))}
-            </select>
+      return (
+        <div class="md-auth-page">
+          <div class="md-auth-card">
+            <h1>{i18n.t('login.title')}</h1>
+
+            <div class="md-row md-row--end" style="margin-bottom:16px">
+              <div class="md-row md-row--tight">
+                <span class="md-muted-sm">{i18n.t('login.language')}</span>
+                <select
+                  id="login-lang"
+                  class="md-select md-select--sm"
+                  value={i18n.lang}
+                  onchange={(e: Event) => i18n.setLang((e.target as HTMLSelectElement).value as Lang)}
+                >
+                  {LANG_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div class="md-row md-row--tight">
+                <span class="md-muted-sm">{i18n.t('login.theme')}</span>
+                <select
+                  id="login-theme"
+                  class="md-select md-select--sm"
+                  value={theme.option}
+                  onchange={(e: Event) => {
+                    theme.setOption((e.target as HTMLSelectElement).value as ThemeOption)
+                    m.redraw()
+                  }}
+                >
+                  {THEME_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {i18n.t(opt.labelKey)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {state.error && (
+              <div class="md-banner md-banner--error" style="margin-bottom:16px">
+                {state.error}
+              </div>
+            )}
+
+            {state.step === 'credentials' ? (
+              <form class="md-field-group" onsubmit={(e: Event) => handleCredentialsSubmit(e)}>
+                <div>
+                  <label class="md-label">{i18n.t('login.username')}</label>
+                  <input
+                    class="md-field"
+                    type="text"
+                    value={state.username}
+                    placeholder={i18n.t('login.usernamePlaceholder')}
+                    disabled={busy}
+                    oninput={(e: Event) => {
+                      state.username = (e.target as HTMLInputElement).value
+                    }}
+                  />
+                </div>
+                <div>
+                  <label class="md-label">{i18n.t('login.password')}</label>
+                  <input
+                    class="md-field"
+                    type="password"
+                    value={state.password}
+                    placeholder={i18n.t('login.passwordPlaceholder')}
+                    disabled={busy}
+                    oninput={(e: Event) => {
+                      state.password = (e.target as HTMLInputElement).value
+                    }}
+                  />
+                </div>
+                <button class="md-btn md-btn--filled md-btn--block" type="submit" disabled={busy}>
+                  {busy ? i18n.t('login.signingIn') : i18n.t('login.signIn')}
+                </button>
+              </form>
+            ) : (
+              <form class="md-field-group" onsubmit={(e: Event) => handleTotpSubmit(e)}>
+                <p class="md-muted" style="text-align:center;margin:0">
+                  {i18n.t('login.totpTitle')}
+                </p>
+                <div>
+                  <label class="md-label">{i18n.t('login.verificationCode')}</label>
+                  <input
+                    class="md-field md-centered-code"
+                    type="text"
+                    maxlength={6}
+                    value={state.totpCode}
+                    placeholder={i18n.t('login.totpPlaceholder')}
+                    disabled={busy}
+                    oninput={(e: Event) => {
+                      state.totpCode = (e.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6)
+                    }}
+                  />
+                </div>
+                <button
+                  class="md-btn md-btn--filled md-btn--block"
+                  type="submit"
+                  disabled={busy || state.totpCode.length !== 6}
+                >
+                  {busy ? i18n.t('login.verifying') : i18n.t('login.verify')}
+                </button>
+                <button class="md-btn md-btn--block" type="button" onclick={() => handleBack()}>
+                  {i18n.t('login.back')}
+                </button>
+              </form>
+            )}
           </div>
         </div>
-
-        {error && (
-          <div className="bg-macaron-rose/30 dark:bg-red-900/30 text-red-700 dark:text-red-300 text-sm rounded-lg px-4 py-3 mb-4">
-            {error}
-          </div>
-        )}
-
-        {step === 'credentials' ? (
-          <form onSubmit={handleCredentialsSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('login.username')}</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-3 py-2 border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm"
-                placeholder={t('login.usernamePlaceholder')}
-                disabled={loading}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('login.password')}</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm"
-                placeholder={t('login.passwordPlaceholder')}
-                disabled={loading}
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2 px-4 bg-macaron-orange/80 hover:bg-macaron-orange text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-            >
-              {loading ? t('login.signingIn') : t('login.signIn')}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleTotpSubmit} className="space-y-4">
-            <div className="text-center mb-4">
-              <p className="text-sm text-gray-600 dark:text-gray-300">{t('login.totpTitle')}</p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('login.verificationCode')}</label>
-              <input
-                type="text"
-                value={totpCode}
-                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                className="w-full px-3 py-2 border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50 text-sm text-center tracking-widest"
-                placeholder={t('login.totpPlaceholder')}
-                disabled={loading}
-                maxLength={6}
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading || totpCode.length !== 6}
-              className="w-full py-2 px-4 bg-macaron-orange/80 hover:bg-macaron-orange text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-            >
-              {loading ? t('login.verifying') : t('login.verify')}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleBack}
-              className="w-full py-2 px-4 text-gray-600 dark:text-gray-400 text-sm hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-            >
-              {t('login.back')}
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
-  )
-}
+      )
+    },
+  }
+})()

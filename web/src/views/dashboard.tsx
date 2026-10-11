@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
-import { fetchServices, ServiceStatus } from '../api/client'
-import { ServiceCard } from '../components/serviceCard'
-import { Toast, useToast } from '../components/toast'
-import { useSSE } from '../hooks/useSSE'
-import { useI18n } from '../i18n/I18nProvider'
+import m from 'mithril'
+import { ServiceStatus, fetchServices } from '../api/client'
+import { ServiceCard, type UptimeMode } from '../components/serviceCard'
+import { i18n } from '../state/i18n'
+import { onSSE, setSSEInterval, sse, type SSEMessage } from '../state/sse'
 
 const SSE_INTERVAL_OPTIONS = [
   { value: '5s', label: '5s' },
@@ -11,145 +10,152 @@ const SSE_INTERVAL_OPTIONS = [
   { value: '15m', label: '15m' },
 ]
 
-export default function Dashboard() {
-  const [services, setServices] = useState<ServiceStatus[]>([])
-  const [uptimeMode, setUptimeMode] = useState<'elapsed' | 'start'>('elapsed')
-  const [, setTick] = useState(0)
-  const { showToast, toast } = useToast()
-  const { lastMessage, interval, setInterval: setSseInterval } = useSSE()
-  const { t } = useI18n()
+interface StatusChangePayload {
+  name: string
+  status: string
+  pid?: number
+  memoryMB: number
+  startedAt?: number
+  exitCode?: number
+}
 
-  const loadServices = useCallback(async () => {
+interface UptimeTickPayload {
+  services: Record<string, { pid: number; memoryMB: number; startedAt?: number }>
+}
+
+
+interface DashboardState {
+  services: ServiceStatus[]
+  uptimeMode: UptimeMode
+  tick: number
+}
+
+// Closure-scoped state: Mithril components have no `this` typing for helper
+// methods, so each view keeps its own plain object.
+export const Dashboard: m.Component = (() => {
+  const state: DashboardState = { services: [], uptimeMode: 'elapsed', tick: 0 }
+  let unsubscribe = () => {}
+  let ticker = 0
+
+  async function loadServices(): Promise<void> {
     try {
-      const data = await fetchServices()
-      setServices(data)
+      state.services = await fetchServices()
     } catch (err) {
+      // A rejected AuthError means the shell is about to redirect to /login.
       if (err instanceof Error && err.name === 'AuthError') return
     }
-  }, [])
+    m.redraw()
+  }
 
-  useEffect(() => {
-    loadServices()
-  }, [loadServices])
-
-  useEffect(() => {
-    if (!lastMessage) return
-
-    if (lastMessage.type === 'status_change') {
-      const payload = lastMessage.payload as {
-        name: string
-        status: string
-        pid?: number
-        memoryMB: number
-        startedAt?: number
-        exitCode?: number
-      }
-      setServices((prev) =>
-        prev.map((s) => {
-          if (s.name !== payload.name) return s
-          return {
-            ...s,
-            status: payload.status,
-            pid: payload.pid || 0,
-            memoryMB: payload.memoryMB,
-            startedAt: payload.startedAt ?? s.startedAt,
-            exitCode: payload.exitCode ?? s.exitCode,
-          }
-        })
-      )
-    }
-
-    if (lastMessage.type === 'uptime_tick') {
-      const payload = lastMessage.payload as {
-        services: Record<string, { pid: number; memoryMB: number; startedAt?: number }>
-      }
-      setServices((prev) =>
-        prev.map((s) => {
-          const info = payload.services[s.name]
-          if (info !== undefined) {
-            return {
-              ...s,
-              pid: info.pid,
-              memoryMB: info.memoryMB,
-              startedAt: info.startedAt ?? s.startedAt,
+  function applyMessage(message: SSEMessage): void {
+    if (message.type === 'status_change') {
+      const p = message.payload as StatusChangePayload
+      state.services = state.services.map((svc) =>
+        svc.name !== p.name
+          ? svc
+          : {
+              ...svc,
+              status: p.status,
+              pid: p.pid || 0,
+              memoryMB: p.memoryMB,
+              startedAt: p.startedAt ?? svc.startedAt,
+              exitCode: p.exitCode ?? svc.exitCode,
             }
-          }
-          // The server only reports a process result for running services. When a
-          // service is absent here, it has no live process — stop the local elapsed
-          // timer by resetting startedAt so the UI shows a dash instead of a stale,
-          // ever-growing value.
-          if (s.startedAt === 0) return s
-          return { ...s, startedAt: 0 }
-        })
       )
     }
-  }, [lastMessage])
 
-  useEffect(() => {
-    if (uptimeMode !== 'elapsed') return
-    const timer = setInterval(() => {
-      setTick((t) => t + 1)
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [uptimeMode])
+    if (message.type === 'uptime_tick') {
+      const p = message.payload as UptimeTickPayload
+      state.services = state.services.map((svc) => {
+        const info = p.services[svc.name]
+        if (info !== undefined) {
+          return { ...svc, pid: info.pid, memoryMB: info.memoryMB, startedAt: info.startedAt ?? svc.startedAt }
+        }
+        // The server only reports running services. When one is absent it has no
+        // live process - reset startedAt so the elapsed timer stops counting.
+        return svc.startedAt === 0 ? svc : { ...svc, startedAt: 0 }
+      })
+    }
 
-  return (
-    <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">{t('dashboard.services')}</h2>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <label htmlFor="sse-interval" className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-              {t('dashboard.duration')}
-            </label>
-              <select
-              id="sse-interval"
-              value={interval}
-              onChange={(e) => setSseInterval(e.target.value)}
-              className="text-xs border border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-macaron-peach"
-            >
-              {SSE_INTERVAL_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+    m.redraw()
+  }
+
+  return {
+    oninit() {
+      loadServices()
+      unsubscribe = onSSE((message) => {
+        if (message) applyMessage(message)
+      })
+      ticker = window.setInterval(() => {
+        state.tick++
+      }, 1000)
+    },
+
+    onremove() {
+      unsubscribe()
+      window.clearInterval(ticker)
+    },
+
+    view() {
+      const services = state.services
+
+      return (
+        <div>
+          <div class="md-row md-row--between" style="margin-bottom:16px">
+            <h2>{i18n.t('dashboard.services')}</h2>
+            <div class="md-row md-row--tight">
+              <div class="md-row md-row--tight">
+                <span class="md-muted-sm">{i18n.t('dashboard.duration')}</span>
+                <select
+                  id="sse-interval"
+                  class="md-select md-select--sm"
+                  value={sse.interval}
+                  onchange={(e: Event) => {
+                    setSSEInterval((e.target as HTMLSelectElement).value)
+                    m.redraw()
+                  }}
+                >
+                  {SSE_INTERVAL_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div class="md-row md-row--tight">
+                <span class="md-muted-sm">{i18n.t('dashboard.uptime')}</span>
+                <select
+                  id="uptime-mode"
+                  class="md-select md-select--sm"
+                  value={state.uptimeMode}
+                  onchange={(e: Event) => {
+                    state.uptimeMode = (e.target as HTMLSelectElement).value as UptimeMode
+                  }}
+                >
+                  <option value="elapsed">{i18n.t('dashboard.elapsed')}</option>
+                  <option value="start">{i18n.t('dashboard.startTime')}</option>
+                </select>
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <label htmlFor="uptime-mode" className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-              {t('dashboard.uptime')}
-            </label>
-            <select
-              id="uptime-mode"
-              value={uptimeMode}
-              onChange={(e) => setUptimeMode(e.target.value as 'elapsed' | 'start')}
-              className="text-xs border border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-macaron-peach"
-            >
-              <option value="elapsed">{t('dashboard.elapsed')}</option>
-              <option value="start">{t('dashboard.startTime')}</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {services.map((svc) => (
-          <ServiceCard
-            key={svc.name}
-            service={svc}
-            onAction={loadServices}
-            showToast={showToast}
-            uptimeMode={uptimeMode}
-          />
-        ))}
-      </div>
 
-      {services.length === 0 && (
-        <div className="text-center py-12 text-gray-400 dark:text-gray-500">
-          {t('dashboard.noServices')}
-        </div>
-      )}
+          {services.length > 0 && (
+            <div class="md-card-grid">
+              {services.map((svc) =>
+                m(ServiceCard, {
+                  key: svc.name,
+                  service: svc,
+                  uptimeMode: state.uptimeMode,
+                  tick: state.tick,
+                  onAction: loadServices,
+                })
+              )}
+            </div>
+          )}
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => {}} />}
-    </div>
-  )
-}
+          {services.length === 0 && <div class="md-empty">{i18n.t('dashboard.noServices')}</div>}
+        </div>
+      )
+    },
+  }
+})()

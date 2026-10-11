@@ -1,14 +1,14 @@
 # gorch Makefile
 #
 # Two binaries are produced from the same source (./cmd/orchard):
-#   gorch       — Echo HTTP server + the embedded React SPA from $(ADMIN_DIR)
+#   gorch       — Echo HTTP server + the embedded Mithril SPA from $(ADMIN_DIR)
 #   orchard     — built with -tags noweb: no HTTP server, no embedded SPA
 #
 # Layout:
 #   cmd/orchard — gorch CLI/supervisor (package main)
 #   cmd/weblite — static file server
 #   server/     — Go HTTP layer (Echo, REST API, SSE, auth)
-#   web/        — React SPA (embedded as github.com/azhai/gorch/web)
+#   web/        — Mithril SPA (embedded as github.com/azhai/gorch/web)
 
 # ── Project config ────────────────────────────────────────
 

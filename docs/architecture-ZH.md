@@ -30,7 +30,7 @@ CLI ──► Unix Socket IPC ──► Supervisor ──► Echo Web Server
 基于 Unix Socket 的进程间通信。CLI 命令通过 `/tmp/gorch/gorch.sock` 与运行中的 supervisor 通信。
 
 ### Web Server（Web 服务器，`server/`）
-基于 Echo 的 HTTP 服务器，内置 React SPA。提供 REST API 和实时 SSE 更新。
+基于 Echo 的 HTTP 服务器，内置 Mithril SPA。提供 REST API 和实时 SSE 更新。
 
 ## 目录结构
 
@@ -40,7 +40,7 @@ CLI ──► Unix Socket IPC ──► Supervisor ──► Echo Web Server
 | `cmd/weblite` | 静态文件服务器 |
 | `supervisor/` | 进程生命周期、定时调度、状态缓存、IPC 服务端 |
 | `server/` | HTTP 层：REST API、SSE Hub、鉴权、嵌入 SPA 的静态服务 |
-| `web/` | React SPA；`embed.go` 把它的 `dist/` 嵌入二进制 |
+| `web/` | Mithril SPA（Material 3 样式）；`embed.go` 把它的 `dist/` 嵌入二进制 |
 | `config/`、`status/`、`ipc/`、`cron/`、`common/` | 支撑包 |
 
 `cmd/orchard` 会被构建两次：
@@ -54,6 +54,6 @@ CLI ──► Unix Socket IPC ──► Supervisor ──► Echo Web Server
 - **Cobra** — CLI 框架
 - **Echo** — HTTP 服务器
 - **go-toml/v2** — TOML 解析
-- **React + TypeScript + Tailwind** — Web 界面（通过 embed 嵌入）
+- **Mithril 2 + TypeScript + Material 3** — Web 界面（CSS 设计令牌，通过 embed 嵌入）
 - **gobus/log** — 日志管理
 - **go-totp** — TOTP 两阶段认证

@@ -1,515 +1,510 @@
-import { useState, useEffect } from 'react'
-import { fetchServices, fetchServiceConfig, updateServiceConfig, saveConfigToFile, createService, deleteService, validateCronExpression, ServiceStatus, ServiceConfig } from '../api/client'
-import { useI18n } from '../i18n/I18nProvider'
+import m from 'mithril'
+import {
+  ServiceConfig,
+  ServiceStatus,
+  createService,
+  deleteService,
+  fetchServiceConfig,
+  fetchServices,
+  saveConfigToFile,
+  updateServiceConfig,
+  validateCronExpression,
+} from '../api/client'
+import { SelectField, TextField } from '../components/fields'
+import { i18n } from '../state/i18n'
 
-const inputClass = 'w-full px-3 py-1.5 text-sm border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50'
+type MsgType = 'info' | 'success' | 'error'
 
-export default function Config() {
-  const [services, setServices] = useState<ServiceStatus[]>([])
-  const [selected, setSelected] = useState<string>('')
-  const [config, setConfig] = useState<ServiceConfig | null>(null)
-  const [originalConfig, setOriginalConfig] = useState<ServiceConfig | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState<string | null>(null)
-  const [messageType, setMessageType] = useState<'info' | 'success' | 'error'>('info')
-  const [isCreating, setIsCreating] = useState(false)
-  const [creatingName, setCreatingName] = useState('')
-  const [cronValidating, setCronValidating] = useState(false)
-  const [cronResult, setCronResult] = useState<{ valid: boolean; message: string; nextRun?: string; nextRun2?: string } | null>(null)
-  const { t } = useI18n()
+interface CronResult {
+  valid: boolean
+  message: string
+  nextRun?: string
+  nextRun2?: string
+}
 
-  useEffect(() => {
-    fetchServices().then(setServices)
-  }, [])
+const RESTART_POLICIES = [
+  { value: 'always', label: 'always' },
+  { value: 'on-failure', label: 'on-failure' },
+  { value: 'never', label: 'never' },
+]
 
-  useEffect(() => {
-    if (!selected) {
-      setConfig(null)
-      setOriginalConfig(null)
-      setCronResult(null)
-      return
-    }
-    fetchServiceConfig(selected).then((cfg) => {
-      cfg.DEPENDS_ON = cfg.DEPENDS_ON || []
-      cfg.ENV_VARS = cfg.ENV_VARS || {}
-      setConfig(cfg)
-      setOriginalConfig(JSON.parse(JSON.stringify(cfg)))
-      setCronResult(null)
-    })
-  }, [selected])
+const BANNER_CLASS: Record<MsgType, string> = {
+  error: 'md-banner--error',
+  success: 'md-banner--success',
+  info: 'md-banner--info',
+}
 
-  const hasChanges = config && originalConfig && JSON.stringify(config) !== JSON.stringify(originalConfig)
+function blankConfig(): ServiceConfig {
+  return {
+    WORK_DIR: '.',
+    EXEC_CMD: '',
+    RESTART_CMD: '',
+    RESTART_POLICY: 'never',
+    BACK_OFF: 0,
+    CHECK_PORT: 0,
+    PRE_ACTION: '',
+    STDOUT: '',
+    STDERR: '',
+    DEPENDS_ON: [],
+    CRON: '',
+    ENV_VARS: {},
+    PID_FILE: '',
+  }
+}
 
-  const showMsg = (msg: string, type: 'info' | 'success' | 'error' = 'info') => {
-    setMessage(msg)
-    setMessageType(type)
+export const ConfigView: m.Component = (() => {
+  const state = {
+    services: [] as ServiceStatus[],
+    selected: '',
+    config: null as ServiceConfig | null,
+    originalConfig: null as ServiceConfig | null,
+    saving: false,
+    message: null as string | null,
+    messageType: 'info' as MsgType,
+    isCreating: false,
+    creatingName: '',
+    cronValidating: false,
+    cronResult: null as CronResult | null,
   }
 
-  const handleSaveAndApply = async () => {
-    if (!config || !selected) return
-    setSaving(true)
-    setMessage(null)
-    try {
-      // Step 1: Apply in-memory changes if there are any (includes cron scheduler refresh)
-      if (hasChanges) {
-        const applyRes = await updateServiceConfig(selected, config)
-        if (!applyRes.success) {
-          showMsg(applyRes.message || t('config.updateFailed'), 'error')
-          return
-        }
-        setOriginalConfig(JSON.parse(JSON.stringify(config)))
-      }
-
-      // Step 2: Persist to file
-      const saveRes = await saveConfigToFile()
-      if (!saveRes.success) {
-        showMsg(saveRes.message || t('config.saveToFileFailed'), 'error')
-        return
-      }
-
-      showMsg(t('config.savedAndApplied'), 'success')
-    } catch (err) {
-      showMsg(err instanceof Error ? err.message : t('config.networkError'), 'error')
-    } finally {
-      setSaving(false)
-    }
+  function showMsg(msg: string, type: MsgType = 'info'): void {
+    state.message = msg
+    state.messageType = type
   }
 
-  const handleCreate = async () => {
-    const name = creatingName.trim()
-    if (!name) {
-      showMsg(t('config.serviceNameRequired'), 'error')
-      return
-    }
-    if (!config || !config.EXEC_CMD.trim()) {
-      showMsg(t('config.execCmdRequired'), 'error')
-      return
-    }
-    setSaving(true)
-    setMessage(null)
-    try {
-      const res = await createService(name, config)
-      if (res.success) {
-        setIsCreating(false)
-        setCreatingName('')
-        setSelected(name)
-        fetchServices().then(setServices)
-        showMsg(t('config.serviceCreated'), 'success')
-      } else {
-        showMsg(res.message || t('config.createFailed'), 'error')
-      }
-    } catch (err) {
-      showMsg(err instanceof Error ? err.message : t('config.networkError'), 'error')
-    } finally {
-      setSaving(false)
-    }
+  function hasChanges(): boolean {
+    const { config, originalConfig } = state
+    return Boolean(config && originalConfig && JSON.stringify(config) !== JSON.stringify(originalConfig))
   }
 
-  const handleDelete = async () => {
-    if (!selected) return
-    if (!confirm(t('config.deleteConfirm', { name: selected }))) return
-    setSaving(true)
-    setMessage(null)
-    try {
-      const res = await deleteService(selected)
-      if (res.success) {
-        setSelected('')
-        setConfig(null)
-        setOriginalConfig(null)
-        fetchServices().then(setServices)
-        showMsg(t('config.serviceDeleted'), 'success')
-      } else {
-        showMsg(res.message || t('config.deleteFailed'), 'error')
-      }
-    } catch (err) {
-      showMsg(err instanceof Error ? err.message : t('config.networkError'), 'error')
-    } finally {
-      setSaving(false)
-    }
+  function updateField<K extends keyof ServiceConfig>(key: K, value: ServiceConfig[K]): void {
+    if (!state.config) return
+    state.config = { ...state.config, [key]: value }
+    if (key === 'CRON') state.cronResult = null
   }
 
-  const handleValidateCron = async () => {
-    if (!config?.CRON) return
-    setCronValidating(true)
-    setCronResult(null)
-    try {
-      const res = await validateCronExpression(config.CRON)
-      setCronResult(res)
-    } catch (err) {
-      setCronResult({ valid: false, message: err instanceof Error ? err.message : t('config.networkError') })
-    } finally {
-      setCronValidating(false)
-    }
+  function renameEnvVar(oldKey: string, newKey: string, value: string): void {
+    if (!state.config) return
+    if (newKey !== oldKey && state.config.ENV_VARS[newKey] !== undefined) return
+    const envs = { ...state.config.ENV_VARS }
+    delete envs[oldKey]
+    envs[newKey] = value
+    updateField('ENV_VARS', envs)
   }
 
-  const updateField = <K extends keyof ServiceConfig>(key: K, value: ServiceConfig[K]) => {
-    if (!config) return
-    setConfig({ ...config, [key]: value })
-    if (key === 'CRON') setCronResult(null)
-  }
-
-  const updateEnvVar = (key: string, value: string) => {
-    if (!config) return
-    setConfig({ ...config, ENV_VARS: { ...config.ENV_VARS, [key]: value } })
-  }
-
-  const addEnvVar = () => {
-    if (!config) return
-    let base = 'NEW_VAR'
+  function addEnvVar(): void {
+    if (!state.config) return
+    const base = 'NEW_VAR'
     let name = base
     let i = 1
-    while (config.ENV_VARS[name] !== undefined) {
+    while (state.config.ENV_VARS[name] !== undefined) {
       name = `${base}_${i++}`
     }
-    setConfig({ ...config, ENV_VARS: { ...config.ENV_VARS, [name]: '' } })
+    updateField('ENV_VARS', { ...state.config.ENV_VARS, [name]: '' })
   }
 
-  const removeEnvVar = (key: string) => {
-    if (!config) return
-    const envs = { ...config.ENV_VARS }
+  function removeEnvVar(key: string): void {
+    if (!state.config) return
+    const envs = { ...state.config.ENV_VARS }
     delete envs[key]
-    setConfig({ ...config, ENV_VARS: envs })
+    updateField('ENV_VARS', envs)
   }
 
-  const msgClass = messageType === 'error'
-    ? 'bg-macaron-rose/30 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-    : messageType === 'success'
-      ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-      : 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
+  async function loadServices(): Promise<void> {
+    try {
+      state.services = await fetchServices()
+    } catch {
+      // Failure surfaces through the shell auth redirect.
+    }
+    m.redraw()
+  }
 
-  return (
-    <div>
-      <div className="flex items-center gap-4 mb-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">{t('config.title')}</h2>
-        <select
-          value={selected}
-          aria-label="Select service to configure"
-          onChange={(e) => {
-            setSelected(e.target.value)
-            setMessage(null)
-            setIsCreating(false)
-          }}
-          className="px-3 py-1.5 text-sm border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
-        >
-          <option value="">{t('config.selectService')}</option>
-          {services.map((s) => (
-            <option key={s.name} value={s.name}>{s.name}</option>
-          ))}
-        </select>
-        <button
-          onClick={() => {
-            setSelected('')
-            setCreatingName('')
-            setConfig({
-              WORK_DIR: '.',
-              EXEC_CMD: '',
-              RESTART_CMD: '',
-              RESTART_POLICY: 'never',
-              BACK_OFF: 0,
-              CHECK_PORT: 0,
-              PRE_ACTION: '',
-              STDOUT: '',
-              STDERR: '',
-              DEPENDS_ON: [],
-              CRON: '',
-              ENV_VARS: {},
-              PID_FILE: '',
-            })
-            setOriginalConfig(null)
-            setIsCreating(true)
-            setMessage(null)
-          }}
-          className="px-3 py-1.5 text-sm bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors"
-          aria-label="Create new service"
-        >
-          {t('config.new')}
-        </button>
-        {selected && !isCreating && (
-          <button
-            onClick={handleDelete}
-            className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
-            aria-label={`Delete service ${selected}`}
-          >
-            {t('config.delete')}
-          </button>
-        )}
-      </div>
+  async function selectService(name: string): Promise<void> {
+    state.selected = name
+    state.cronResult = null
+    if (!name) {
+      state.config = null
+      state.originalConfig = null
+      m.redraw()
+      return
+    }
+    const cfg = await fetchServiceConfig(name)
+    cfg.DEPENDS_ON = cfg.DEPENDS_ON || []
+    cfg.ENV_VARS = cfg.ENV_VARS || []
+    state.config = cfg
+    state.originalConfig = JSON.parse(JSON.stringify(cfg))
+    m.redraw()
+  }
 
-      {config ? (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-macaron-peach/60 dark:border-gray-700 p-4 space-y-3">
-          {isCreating && (
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                {t('config.serviceName')} <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={creatingName}
-                onChange={(e) => setCreatingName(e.target.value)}
-                className={inputClass}
-                placeholder={t('config.serviceNamePlaceholder')}
-              />
-            </div>
-          )}
-          <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              EXEC_CMD <span className="text-gray-400">({t('config.command')})</span>
-            </label>
-            <input
-              type="text"
-              value={config.EXEC_CMD}
-              onChange={(e) => updateField('EXEC_CMD', e.target.value)}
-              className={inputClass}
-            />
-          </div>
+  async function handleSaveAndApply(): Promise<void> {
+    const { config, selected } = state
+    if (!config || !selected) return
+    state.saving = true
+    state.message = null
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              RESTART_CMD <span className="text-gray-400">({t('config.gracefulReload')})</span>
-            </label>
-            <input
-              type="text"
-              value={config.RESTART_CMD || ''}
-              onChange={(e) => updateField('RESTART_CMD', e.target.value)}
-              className={inputClass}
-              placeholder="e.g. nginx -s reload"
-            />
-          </div>
+    // Step 1: apply in-memory changes (this also refreshes the cron scheduler).
+    if (hasChanges()) {
+      const applyRes = await updateServiceConfig(selected, config)
+      if (!applyRes.success) {
+        showMsg(applyRes.message || i18n.t('config.updateFailed'), 'error')
+        state.saving = false
+        m.redraw()
+        return
+      }
+      state.originalConfig = JSON.parse(JSON.stringify(config))
+    }
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              PID_FILE <span className="text-gray-400">({t('config.pidFile')})</span>
-            </label>
-            <input
-              type="text"
-              value={config.PID_FILE || ''}
-              onChange={(e) => updateField('PID_FILE', e.target.value)}
-              className={inputClass}
-              placeholder="e.g. /var/run/nginx.pid"
-            />
-          </div>
+    // Step 2: persist to the config file.
+    const saveRes = await saveConfigToFile()
+    if (!saveRes.success) {
+      showMsg(saveRes.message || i18n.t('config.saveToFileFailed'), 'error')
+    } else {
+      showMsg(i18n.t('config.savedAndApplied'), 'success')
+    }
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              PRE_ACTION <span className="text-gray-400">({t('config.preAction')})</span>
-            </label>
-            <input
-              type="text"
-              value={config.PRE_ACTION || ''}
-              onChange={(e) => updateField('PRE_ACTION', e.target.value)}
-              className={inputClass}
-              placeholder="e.g. pkill -f myservice"
-            />
-          </div>
+    state.saving = false
+    m.redraw()
+  }
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              WORK_DIR <span className="text-gray-400">({t('config.workingDir')})</span>
-            </label>
-            <input
-              type="text"
-              value={config.WORK_DIR}
-              onChange={(e) => updateField('WORK_DIR', e.target.value)}
-              className={inputClass}
-            />
-          </div>
+  async function handleCreate(): Promise<void> {
+    const name = state.creatingName.trim()
+    if (!name) {
+      showMsg(i18n.t('config.serviceNameRequired'), 'error')
+      return
+    }
+    if (!state.config?.EXEC_CMD.trim()) {
+      showMsg(i18n.t('config.execCmdRequired'), 'error')
+      return
+    }
+    state.saving = true
+    state.message = null
 
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                RESTART_POLICY <span className="text-gray-400">({t('config.restartPolicy')})</span>
-              </label>
-              <select
-                value={config.RESTART_POLICY}
-                onChange={(e) => updateField('RESTART_POLICY', e.target.value)}
-                className="w-full px-3 py-1.5 text-sm border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
-              >
-                <option value="always">always</option>
-                <option value="on-failure">on-failure</option>
-                <option value="never">never</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                CHECK_PORT <span className="text-gray-400">(0 = {t('config.off')})</span>
-              </label>
-              <input
-                type="number"
-                value={config.CHECK_PORT || 0}
-                onChange={(e) => updateField('CHECK_PORT', parseInt(e.target.value) || 0)}
-                className={inputClass}
-                placeholder="0"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                BACK_OFF <span className="text-gray-400">({t('config.backOff')})</span>
-              </label>
-              <input
-                type="number"
-                value={config.BACK_OFF}
-                onChange={(e) => updateField('BACK_OFF', parseInt(e.target.value) || 0)}
-                className={inputClass}
-              />
-            </div>
-          </div>
+    const res = await createService(name, state.config)
+    if (res.success) {
+      state.isCreating = false
+      state.creatingName = ''
+      state.selected = ''
+      state.config = null
+      state.originalConfig = null
+      showMsg(i18n.t('config.serviceCreated'), 'success')
+      loadServices()
+    } else {
+      showMsg(res.message || i18n.t('config.createFailed'), 'error')
+    }
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                STDOUT <span className="text-gray-400">({t('config.logOutput')})</span>
-              </label>
-              <input
-                type="text"
-                value={config.STDOUT}
-                onChange={(e) => updateField('STDOUT', e.target.value)}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                STDERR <span className="text-gray-400">({t('config.errorOutput')})</span>
-              </label>
-              <input
-                type="text"
-                value={config.STDERR}
-                onChange={(e) => updateField('STDERR', e.target.value)}
-                className={inputClass}
-              />
-            </div>
-          </div>
+    state.saving = false
+    m.redraw()
+  }
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              CRON <span className="text-gray-400">({t('config.schedule')})</span>
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={config.CRON || ''}
-                onChange={(e) => updateField('CRON', e.target.value)}
-                className="flex-1 px-3 py-1.5 text-sm border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
-                placeholder={t('config.cronPlaceholder')}
-              />
+  async function handleDelete(): Promise<void> {
+    const name = state.selected
+    if (!name) return
+    if (!confirm(i18n.t('config.deleteConfirm', { name }))) return
+    state.saving = true
+    state.message = null
+
+    const res = await deleteService(name)
+    if (res.success) {
+      state.selected = ''
+      state.config = null
+      state.originalConfig = null
+      showMsg(i18n.t('config.serviceDeleted'), 'success')
+      loadServices()
+    } else {
+      showMsg(res.message || i18n.t('config.deleteFailed'), 'error')
+    }
+
+    state.saving = false
+    m.redraw()
+  }
+
+  async function handleValidateCron(): Promise<void> {
+    const expr = state.config?.CRON
+    if (!expr) return
+    state.cronValidating = true
+    state.cronResult = null
+    try {
+      state.cronResult = await validateCronExpression(expr)
+    } catch (err) {
+      state.cronResult = {
+        valid: false,
+        message: err instanceof Error ? err.message : i18n.t('config.networkError'),
+      }
+    } finally {
+      state.cronValidating = false
+    }
+    m.redraw()
+  }
+
+  function startCreate(): void {
+    state.selected = ''
+    state.creatingName = ''
+    state.config = blankConfig()
+    state.originalConfig = null
+    state.isCreating = true
+    state.message = null
+  }
+
+  function cancelCreate(): void {
+    state.isCreating = false
+    state.creatingName = ''
+    state.selected = ''
+    state.config = null
+    state.originalConfig = null
+    state.message = null
+  }
+
+  return {
+    oninit() {
+      loadServices()
+    },
+
+    view() {
+      const cfg = state.config
+      const envEntries = cfg ? Object.entries(cfg.ENV_VARS) : []
+      const busy = state.saving
+
+      return (
+        <div>
+          <div class="md-row" style="margin-bottom:16px">
+            <h2>{i18n.t('config.title')}</h2>
+            {m(SelectField, {
+              class: 'md-select',
+              ariaLabel: 'Select service to configure',
+              value: state.selected,
+              options: [
+                { value: '', label: i18n.t('config.selectService') },
+                ...state.services.map((s) => ({ value: s.name, label: s.name })),
+              ],
+              onchange: (value: string) => {
+                state.message = null
+                state.isCreating = false
+                selectService(value)
+              },
+            })}
+            <button
+              class="md-btn md-btn--tonal md-btn--sm"
+              aria-label="Create new service"
+              onclick={() => startCreate()}
+            >
+              {i18n.t('config.new')}
+            </button>
+            {state.selected && !state.isCreating && (
               <button
-                onClick={handleValidateCron}
-                disabled={!config.CRON || cronValidating}
-                className="px-3 py-1.5 text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-200 dark:hover:bg-amber-900/60 transition-colors disabled:opacity-40 whitespace-nowrap"
+                class="md-btn md-btn--danger md-btn--sm"
+                aria-label={`Delete service ${state.selected}`}
+                onclick={() => handleDelete()}
               >
-                {cronValidating ? t('config.checking') : t('config.validate')}
+                {i18n.t('config.delete')}
               </button>
+            )}
+          </div>
+
+          {!cfg ? (
+            <div class="md-card">
+              <p class="md-muted">{i18n.t('config.selectHint')}</p>
             </div>
-            {cronResult && (
-              <div className={`mt-1 text-xs rounded px-2 py-1 ${cronResult.valid ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'}`}>
-                {cronResult.valid
-                  ? t('config.cronValid', { next1: cronResult.nextRun || '', next2: cronResult.nextRun2 || '' })
-                  : t('config.cronInvalid', { message: cronResult.message })
-                }
+          ) : (
+            <div class="md-card md-field-group">
+              {state.isCreating &&
+                m(TextField, {
+                  label: `${i18n.t('config.serviceName')} *`,
+                  value: state.creatingName,
+                  placeholder: i18n.t('config.serviceNamePlaceholder'),
+                  oninput: (value: string) => {
+                    state.creatingName = value
+                  },
+                })}
+
+              {m(TextField, {
+                label: 'EXEC_CMD',
+                hint: i18n.t('config.command'),
+                value: cfg.EXEC_CMD,
+                oninput: (value: string) => updateField('EXEC_CMD', value),
+              })}
+
+              {m(TextField, {
+                label: 'RESTART_CMD',
+                hint: i18n.t('config.gracefulReload'),
+                value: cfg.RESTART_CMD || '',
+                placeholder: 'e.g. nginx -s reload',
+                oninput: (value: string) => updateField('RESTART_CMD', value),
+              })}
+
+              {m(TextField, {
+                label: 'PID_FILE',
+                hint: i18n.t('config.pidFile'),
+                value: cfg.PID_FILE || '',
+                placeholder: 'e.g. /var/run/nginx.pid',
+                oninput: (value: string) => updateField('PID_FILE', value),
+              })}
+
+              {m(TextField, {
+                label: 'PRE_ACTION',
+                hint: i18n.t('config.preAction'),
+                value: cfg.PRE_ACTION || '',
+                placeholder: 'e.g. pkill -f myservice',
+                oninput: (value: string) => updateField('PRE_ACTION', value),
+              })}
+
+              {m(TextField, {
+                label: 'WORK_DIR',
+                hint: i18n.t('config.workingDir'),
+                value: cfg.WORK_DIR,
+                oninput: (value: string) => updateField('WORK_DIR', value),
+              })}
+
+              <div class="md-grid-3">
+                {m(SelectField, {
+                  label: 'RESTART_POLICY',
+                  hint: i18n.t('config.restartPolicy'),
+                  value: cfg.RESTART_POLICY,
+                  options: RESTART_POLICIES,
+                  onchange: (value: string) => updateField('RESTART_POLICY', value),
+                })}
+                {m(TextField, {
+                  label: 'CHECK_PORT',
+                  hint: `0 = ${i18n.t('config.off')}`,
+                  type: 'number',
+                  value: String(cfg.CHECK_PORT || 0),
+                  placeholder: '0',
+                  oninput: (value: string) => updateField('CHECK_PORT', parseInt(value, 10) || 0),
+                })}
+                {m(TextField, {
+                  label: 'BACK_OFF',
+                  hint: i18n.t('config.backOff'),
+                  type: 'number',
+                  value: String(cfg.BACK_OFF),
+                  oninput: (value: string) => updateField('BACK_OFF', parseInt(value, 10) || 0),
+                })}
               </div>
-            )}
-          </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              DEPENDS_ON <span className="text-gray-400">({t('config.dependencies')})</span>
-            </label>
-            <input
-              type="text"
-              value={config.DEPENDS_ON.join(', ')}
-              onChange={(e) => updateField('DEPENDS_ON', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
-              className={inputClass}
-              placeholder={t('config.depsPlaceholder')}
-            />
-          </div>
+              <div class="md-grid-2">
+                {m(TextField, {
+                  label: 'STDOUT',
+                  hint: i18n.t('config.logOutput'),
+                  value: cfg.STDOUT,
+                  oninput: (value: string) => updateField('STDOUT', value),
+                })}
+                {m(TextField, {
+                  label: 'STDERR',
+                  hint: i18n.t('config.errorOutput'),
+                  value: cfg.STDERR,
+                  oninput: (value: string) => updateField('STDERR', value),
+                })}
+              </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">
-                ENV_VARS <span className="text-gray-400">({t('config.environment')})</span>
-              </label>
-              <button onClick={addEnvVar} className="text-xs text-blue-700 dark:text-blue-400 hover:text-blue-900 dark:hover:text-blue-300">
-                {t('config.add')}
-              </button>
-            </div>
-            <div className="space-y-1">
-              {Object.entries(config.ENV_VARS).map(([key, value]) => (
-                <div key={key} className="flex gap-2">
-                  <input
-                    type="text"
-                    value={key}
-                    onChange={(e) => {
-                      const newKey = e.target.value
-                      if (newKey !== key && config.ENV_VARS[newKey] !== undefined) return
-                      const envs = { ...config.ENV_VARS }
-                      delete envs[key]
-                      envs[newKey] = value
-                      updateField('ENV_VARS', envs)
-                    }}
-                    className="w-1/3 px-2 py-1 text-sm border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
-                    placeholder={t('config.key')}
-                  />
-                  <input
-                    type="text"
-                    value={value}
-                    onChange={(e) => updateEnvVar(key, e.target.value)}
-                    className="flex-1 px-2 py-1 text-sm border border-macaron-peach dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-macaron-orange/50"
-                    placeholder={t('config.value')}
-                  />
-                  <button onClick={() => removeEnvVar(key)} className="text-xs text-red-700 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300 px-1" aria-label={`Remove environment variable ${key}`}>x</button>
+              <div>
+                {m(TextField, {
+                  label: 'CRON',
+                  hint: i18n.t('config.schedule'),
+                  value: cfg.CRON || '',
+                  placeholder: i18n.t('config.cronPlaceholder'),
+                  oninput: (value: string) => updateField('CRON', value),
+                })}
+                <div class="md-row" style="margin-top:8px">
+                  <button
+                    class="md-btn md-btn--tonal md-btn--sm"
+                    disabled={!cfg.CRON || state.cronValidating}
+                    onclick={() => handleValidateCron()}
+                  >
+                    {state.cronValidating ? i18n.t('config.checking') : i18n.t('config.validate')}
+                  </button>
                 </div>
-              ))}
-              {Object.keys(config.ENV_VARS).length === 0 && (
-                <p className="text-xs text-gray-400 dark:text-gray-500">{t('config.noEnvVars')}</p>
-              )}
-            </div>
-          </div>
+                {state.cronResult && (
+                  <div
+                    class={`md-banner md-banner--compact ${state.cronResult.valid ? 'md-banner--success' : 'md-banner--error'}`}
+                    style="margin-top:8px"
+                  >
+                    {state.cronResult.valid
+                      ? i18n.t('config.cronValid', {
+                          next1: state.cronResult.nextRun || '',
+                          next2: state.cronResult.nextRun2 || '',
+                        })
+                      : i18n.t('config.cronInvalid', { message: state.cronResult.message })}
+                  </div>
+                )}
+              </div>
 
-          {message && (
-            <div className={`text-sm rounded-lg px-3 py-2 ${msgClass}`}>
-              {message}
+              {m(TextField, {
+                label: 'DEPENDS_ON',
+                hint: i18n.t('config.dependencies'),
+                value: cfg.DEPENDS_ON.join(', '),
+                placeholder: i18n.t('config.depsPlaceholder'),
+                oninput: (value: string) =>
+                  updateField(
+                    'DEPENDS_ON',
+                    value.split(',').map((s) => s.trim()).filter(Boolean)
+                  ),
+              })}
+
+              <div>
+                <div class="md-row md-row--between" style="margin-bottom:4px">
+                  <span class="md-label" style="margin:0">
+                    ENV_VARS <span class="md-label__hint">({i18n.t('config.environment')})</span>
+                  </span>
+                  <button class="md-btn md-btn--sm" onclick={() => addEnvVar()}>
+                    {i18n.t('config.add')}
+                  </button>
+                </div>
+                <div class="md-field-group">
+                  {envEntries.map(([key, value]) => (
+                    <div key={key} class="md-row md-row--tight">
+                      <input
+                        class="md-field md-field--sm"
+                        style="width:33%"
+                        value={key}
+                        placeholder={i18n.t('config.key')}
+                        oninput={(e: Event) => renameEnvVar(key, (e.target as HTMLInputElement).value, value)}
+                      />
+                      <input
+                        class="md-field md-field--sm"
+                        style="flex:1"
+                        value={value}
+                        placeholder={i18n.t('config.value')}
+                        oninput={(e: Event) => renameEnvVar(key, key, (e.target as HTMLInputElement).value)}
+                      />
+                      <button
+                        class="md-btn md-btn--danger md-btn--sm"
+                        aria-label={`Remove environment variable ${key}`}
+                        onclick={() => removeEnvVar(key)}
+                      >
+                        x
+                      </button>
+                    </div>
+                  ))}
+                  {envEntries.length === 0 && <p class="md-muted-sm">{i18n.t('config.noEnvVars')}</p>}
+                </div>
+              </div>
+
+              {state.message && (
+                <div class={`md-banner ${BANNER_CLASS[state.messageType]}`}>{state.message}</div>
+              )}
+
+              <div class="md-row md-row--tight">
+                {state.isCreating ? (
+                  <button
+                    class="md-btn md-btn--filled"
+                    disabled={!state.creatingName.trim() || !cfg.EXEC_CMD.trim() || busy}
+                    onclick={() => handleCreate()}
+                  >
+                    {state.saving ? i18n.t('config.creating') : i18n.t('config.createService')}
+                  </button>
+                ) : (
+                  <button class="md-btn md-btn--filled" disabled={busy} onclick={() => handleSaveAndApply()}>
+                    {state.saving ? i18n.t('config.saving') : i18n.t('config.saveAndApply')}
+                  </button>
+                )}
+                {state.isCreating && (
+                  <button class="md-btn" onclick={() => cancelCreate()}>
+                    {i18n.t('config.cancel')}
+                  </button>
+                )}
+              </div>
             </div>
           )}
-
-          <div className="flex items-center gap-3 pt-2">
-            {isCreating ? (
-              <button
-                onClick={handleCreate}
-                disabled={!creatingName.trim() || !config?.EXEC_CMD?.trim() || saving}
-                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {saving ? t('config.creating') : t('config.createService')}
-              </button>
-            ) : (
-              <button
-                onClick={handleSaveAndApply}
-                disabled={saving}
-                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {saving ? t('config.saving') : t('config.saveAndApply')}
-              </button>
-            )}
-            {isCreating && (
-              <button
-                onClick={() => {
-                  setIsCreating(false)
-                  setCreatingName('')
-                  setSelected('')
-                  setConfig(null)
-                  setOriginalConfig(null)
-                  setMessage(null)
-                }}
-                className="px-4 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              >
-                {t('config.cancel')}
-              </button>
-            )}
-          </div>
         </div>
-      ) : (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-macaron-peach/60 dark:border-gray-700 p-4">
-          <p className="text-sm text-gray-400 dark:text-gray-500">{t('config.selectHint')}</p>
-        </div>
-      )}
-    </div>
-  )
-}
+      )
+    },
+  }
+})()

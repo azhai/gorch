@@ -1,286 +1,278 @@
-import { useState, useEffect } from 'react'
+import m from 'mithril'
 import {
-  totpSetup,
-  totpVerifySetup,
-  totpStatus,
-  totpDisable,
-  totpRegenerateBackupCodes,
   TOTPSetupResponse,
   TOTPStatus,
-
+  totpDisable,
+  totpRegenerateBackupCodes,
+  totpSetup,
+  totpStatus,
+  totpVerifySetup,
 } from '../api/client'
-import { useI18n } from '../i18n/I18nProvider'
+import { i18n } from '../state/i18n'
 
-export default function TOTPSettings() {
-  const [status, setStatus] = useState<TOTPStatus | null>(null)
-  const [setupData, setSetupData] = useState<TOTPSetupResponse | null>(null)
-  const [verifyCode, setVerifyCode] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-  const { t } = useI18n()
+const BLANK_STATUS: TOTPStatus = { enabled: false, backupCodes: 0, hasBinding: false }
 
-  useEffect(() => {
-    loadStatus()
-  }, [])
-
-  async function loadStatus() {
-    setLoading(true)
-    try {
-      const res = await totpStatus()
-      if (res.success && res.data) {
-        setStatus(res.data)
-      } else {
-        setStatus({ enabled: false, backupCodes: 0, hasBinding: false })
-      }
-    } catch (e) {
-      setError(t('totp.failedLoad'))
-    } finally {
-      setLoading(false)
-    }
+export const TOTPView: m.Component = (() => {
+  const state = {
+    status: null as TOTPStatus | null,
+    setupData: null as TOTPSetupResponse | null,
+    verifyCode: '',
+    loading: false,
+    error: '',
+    success: '',
   }
 
-  async function handleSetup() {
-    setLoading(true)
-    setError('')
-    setSuccess('')
+  async function loadStatus(): Promise<void> {
+    state.loading = true
+    try {
+      const res = await totpStatus()
+      state.status = res.success && res.data ? res.data : BLANK_STATUS
+    } catch {
+      state.error = i18n.t('totp.failedLoad')
+    } finally {
+      state.loading = false
+    }
+    m.redraw()
+  }
+
+  async function handleSetup(): Promise<void> {
+    state.loading = true
+    state.error = ''
+    state.success = ''
     try {
       const res = await totpSetup()
       if (res.success && res.data) {
-        setSetupData(res.data)
+        state.setupData = res.data
       } else {
-        setError(res.message || t('totp.setupFailed'))
+        state.error = res.message || i18n.t('totp.setupFailed')
       }
-    } catch (e) {
-      setError(t('totp.failedSetup'))
+    } catch {
+      state.error = i18n.t('totp.failedSetup')
     } finally {
-      setLoading(false)
+      state.loading = false
     }
+    m.redraw()
   }
 
-  async function handleVerifySetup() {
-    if (!verifyCode) {
-      setError(t('totp.enterCode'))
+  async function handleVerifySetup(): Promise<void> {
+    if (!state.verifyCode) {
+      state.error = i18n.t('totp.enterCode')
       return
     }
-    setLoading(true)
-    setError('')
+    state.loading = true
+    state.error = ''
     try {
-      const res = await totpVerifySetup(verifyCode)
+      const res = await totpVerifySetup(state.verifyCode)
       if (res.success) {
-        setSuccess(t('totp.enabledSuccess'))
-        setSetupData(null)
-        setVerifyCode('')
-        loadStatus()
+        state.success = i18n.t('totp.enabledSuccess')
+        state.setupData = null
+        state.verifyCode = ''
+        await loadStatus()
       } else {
-        setError(res.message || t('totp.verifyFailed'))
+        state.error = res.message || i18n.t('totp.verifyFailed')
       }
-    } catch (e) {
-      setError(t('totp.failedVerify'))
+    } catch {
+      state.error = i18n.t('totp.failedVerify')
     } finally {
-      setLoading(false)
+      state.loading = false
     }
+    m.redraw()
   }
 
-  async function handleDisable() {
-    if (!confirm(t('totp.disableConfirm'))) {
-      return
-    }
-    setLoading(true)
-    setError('')
+  async function handleDisable(): Promise<void> {
+    if (!confirm(i18n.t('totp.disableConfirm'))) return
+    state.loading = true
+    state.error = ''
     try {
       const res = await totpDisable()
       if (res.success) {
-        setSuccess(t('totp.disabledSuccess'))
-        loadStatus()
+        state.success = i18n.t('totp.disabledSuccess')
+        await loadStatus()
       } else {
-        setError(res.message || t('totp.failedDisable'))
+        state.error = res.message || i18n.t('totp.failedDisable')
       }
-    } catch (e) {
-      setError(t('totp.failedDisable'))
+    } catch {
+      state.error = i18n.t('totp.failedDisable')
     } finally {
-      setLoading(false)
+      state.loading = false
     }
+    m.redraw()
   }
 
-  async function handleRegenerateBackupCodes() {
-    if (!confirm(t('totp.regenerateConfirm'))) {
-      return
-    }
-    setLoading(true)
-    setError('')
+  async function handleRegenerateBackupCodes(): Promise<void> {
+    if (!confirm(i18n.t('totp.regenerateConfirm'))) return
+    state.loading = true
+    state.error = ''
     try {
       const res = await totpRegenerateBackupCodes()
       if (res.success && res.data) {
-        setSetupData({ ...setupData!, backupCodes: res.data.backupCodes })
-        setSuccess(t('totp.regenerated'))
-        loadStatus()
+        if (state.setupData) {
+          state.setupData = { ...state.setupData, backupCodes: res.data.backupCodes }
+        }
+        state.success = i18n.t('totp.regenerated')
+        await loadStatus()
       } else {
-        setError(res.message || t('totp.failedRegenerate'))
+        state.error = res.message || i18n.t('totp.failedRegenerate')
       }
-    } catch (e) {
-      setError(t('totp.failedRegenerate'))
+    } catch {
+      state.error = i18n.t('totp.failedRegenerate')
     } finally {
-      setLoading(false)
+      state.loading = false
     }
+    m.redraw()
   }
 
-  return (
-    <div className="max-w-2xl mx-auto">
-      <h2 className="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-6">{t('totp.title')}</h2>
+  function renderStatus() {
+    const status = state.status
+    if (state.loading || !status) {
+      return <div class="md-muted-sm">{i18n.t('totp.loading')}</div>
+    }
 
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-red-700 dark:text-red-300 text-sm">
-          {error}
-        </div>
-      )}
-
-      {success && (
-        <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded text-green-700 dark:text-green-300 text-sm">
-          {success}
-        </div>
-      )}
-
-      {loading && !setupData && (
-        <div className="text-gray-500 dark:text-gray-400 text-sm">{t('totp.loading')}</div>
-      )}
-
-      {!loading && !setupData && status && (
-        <div className="space-y-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="font-medium text-gray-800 dark:text-gray-100">{t('totp.status')}</div>
-                <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                  {status.enabled ? t('totp.enabled') : t('totp.notEnabled')}
-                </div>
+    return (
+      <div class="md-field-group">
+        <div class="md-card">
+          <div class="md-row md-row--between">
+            <div>
+              <h3>{i18n.t('totp.status')}</h3>
+              <div class="md-muted-sm" style="margin-top:4px">
+                {status.enabled ? i18n.t('totp.enabled') : i18n.t('totp.notEnabled')}
               </div>
-              <span
-                className={`px-2 py-1 rounded text-xs font-medium ${
-                  status.enabled
-                    ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
-                    : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-                }`}
-              >
-                {status.enabled ? t('totp.enabledBadge') : t('totp.disabledBadge')}
-              </span>
             </div>
+            <span class={`md-chip ${status.enabled ? 'md-chip--success' : 'md-chip--filled'}`}>
+              {status.enabled ? i18n.t('totp.enabledBadge') : i18n.t('totp.disabledBadge')}
+            </span>
           </div>
+        </div>
 
+        {status.enabled && (
+          <div class="md-card">
+            <h3 style="margin-bottom:4px">{i18n.t('totp.backupCodes')}</h3>
+            <div class="md-muted-sm" style="margin-bottom:12px">
+              {i18n.t('totp.backupRemaining', { count: status.backupCodes })}
+            </div>
+            <button
+              class="md-btn md-btn--tonal md-btn--sm"
+              disabled={state.loading}
+              onclick={() => handleRegenerateBackupCodes()}
+            >
+              {i18n.t('totp.regenerate')}
+            </button>
+          </div>
+        )}
+
+        <div class="md-row md-row--tight">
+          {!status.enabled && (
+            <button class="md-btn md-btn--filled" disabled={state.loading} onclick={() => handleSetup()}>
+              {i18n.t('totp.enable')}
+            </button>
+          )}
           {status.enabled && (
-            <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-              <div className="font-medium text-gray-800 dark:text-gray-100 mb-2">{t('totp.backupCodes')}</div>
-              <div className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-                {t('totp.backupRemaining', { count: status.backupCodes })}
+            <button class="md-btn md-btn--danger" disabled={state.loading} onclick={() => handleDisable()}>
+              {i18n.t('totp.disable')}
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderSetup() {
+    const setup = state.setupData
+    if (!setup) return null
+
+    return (
+      <div class="md-field-group">
+        <div class="md-card" style="text-align:center">
+          <h3 style="margin-bottom:16px">{i18n.t('totp.scanQr')}</h3>
+          <img class="md-qr" src={setup.qrCode} alt="TOTP QR Code" />
+          <div class="md-muted-sm" style="margin-top:12px">
+            {i18n.t('totp.scanQrHelp')}
+          </div>
+        </div>
+
+        <div class="md-card">
+          <h3 style="margin-bottom:16px">{i18n.t('totp.manualEntry')}</h3>
+          <div class="md-code-box md-mono">{setup.secret}</div>
+        </div>
+
+        <div class="md-card">
+          <h3 style="margin-bottom:16px">{i18n.t('totp.backupCodes')}</h3>
+          <div class="md-muted-sm" style="margin-bottom:12px">
+            {i18n.t('totp.backupSaveHint')}
+          </div>
+          <div class="md-grid-2">
+            {setup.backupCodes.map((code, i) => (
+              <div key={i} class="md-code-box md-mono" style="text-align:center">
+                {code}
               </div>
-              <button
-                onClick={handleRegenerateBackupCodes}
-                disabled={loading}
-                className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition disabled:opacity-50 text-gray-700 dark:text-gray-200"
-              >
-                {t('totp.regenerate')}
-              </button>
+            ))}
+          </div>
+        </div>
+
+        <div class="md-card">
+          <h3 style="margin-bottom:16px">{i18n.t('totp.verifySetup')}</h3>
+          <div class="md-muted-sm" style="margin-bottom:12px">
+            {i18n.t('totp.verifySetupHelp')}
+          </div>
+          <div class="md-row md-row--tight">
+            <input
+              class="md-field md-centered-code"
+              style="flex:1"
+              type="text"
+              maxlength={6}
+              value={state.verifyCode}
+              placeholder="000000"
+              oninput={(e: Event) => {
+                state.verifyCode = (e.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6)
+              }}
+            />
+            <button
+              class="md-btn md-btn--filled"
+              disabled={state.loading || state.verifyCode.length !== 6}
+              onclick={() => handleVerifySetup()}
+            >
+              {i18n.t('totp.verifyButton')}
+            </button>
+          </div>
+        </div>
+
+        <button
+          class="md-btn"
+          onclick={() => {
+            state.setupData = null
+            state.verifyCode = ''
+          }}
+        >
+          {i18n.t('totp.cancelSetup')}
+        </button>
+      </div>
+    )
+  }
+
+  return {
+    oninit() {
+      loadStatus()
+    },
+
+    view() {
+      return (
+        <div style="max-width:672px;margin:0 auto">
+          <h2 style="margin-bottom:24px">{i18n.t('totp.title')}</h2>
+
+          {state.error && (
+            <div class="md-banner md-banner--error" style="margin-bottom:16px">
+              {state.error}
+            </div>
+          )}
+          {state.success && (
+            <div class="md-banner md-banner--success" style="margin-bottom:16px">
+              {state.success}
             </div>
           )}
 
-          <div className="flex gap-3">
-            {!status.enabled && (
-              <button
-                onClick={handleSetup}
-                disabled={loading}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition disabled:opacity-50"
-              >
-                {t('totp.enable')}
-              </button>
-            )}
-            {status.enabled && (
-              <button
-                onClick={handleDisable}
-                disabled={loading}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded transition disabled:opacity-50"
-              >
-                {t('totp.disable')}
-              </button>
-            )}
-          </div>
+          {state.setupData ? renderSetup() : renderStatus()}
         </div>
-      )}
-
-      {setupData && (
-        <div className="space-y-6">
-          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.scanQr')}</h3>
-            <div className="flex flex-col items-center gap-4">
-              <img
-                src={setupData.qrCode}
-                alt="TOTP QR Code"
-                className="w-48 h-48 border border-gray-200 dark:border-gray-600 rounded"
-              />
-              <div className="text-xs text-gray-500 dark:text-gray-400 text-center">
-                {t('totp.scanQrHelp')}
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.manualEntry')}</h3>
-            <div className="bg-gray-50 dark:bg-gray-700 p-3 rounded font-mono text-sm break-all text-gray-800 dark:text-gray-200">
-              {setupData.secret}
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.backupCodes')}</h3>
-            <div className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-              {t('totp.backupSaveHint')}
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {setupData.backupCodes.map((code, i) => (
-                <div
-                  key={i}
-                  className="bg-gray-50 dark:bg-gray-700 p-2 rounded font-mono text-sm text-center text-gray-800 dark:text-gray-200"
-                >
-                  {code}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-            <h3 className="font-medium text-gray-800 dark:text-gray-100 mb-4">{t('totp.verifySetup')}</h3>
-            <div className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-              {t('totp.verifySetupHelp')}
-            </div>
-            <div className="flex gap-3">
-              <input
-                type="text"
-                value={verifyCode}
-                onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="000000"
-                className="flex-1 px-3 py-2 border border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded text-center font-mono text-lg tracking-widest"
-                maxLength={6}
-              />
-              <button
-                onClick={handleVerifySetup}
-                disabled={loading || verifyCode.length !== 6}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition disabled:opacity-50"
-              >
-                {t('totp.verifyButton')}
-              </button>
-            </div>
-          </div>
-
-          <button
-            onClick={() => {
-              setSetupData(null)
-              setVerifyCode('')
-            }}
-            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-          >
-            {t('totp.cancelSetup')}
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
+      )
+    },
+  }
+})()
