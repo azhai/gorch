@@ -82,7 +82,7 @@ func StartProcess(ctx context.Context, svc config.ServiceConfig, name string) (*
 	}
 
 	if svc.STDOUT != "" {
-		f, err := os.OpenFile(svc.STDOUT, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, err := openLogFile(svc.STDOUT)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open stdout file %s: %w", svc.STDOUT, err)
 		}
@@ -95,7 +95,7 @@ func StartProcess(ctx context.Context, svc config.ServiceConfig, name string) (*
 			cmd.Stderr = proc.StdoutFile
 			proc.StderrFile = proc.StdoutFile
 		} else {
-			f, err := os.OpenFile(svc.STDERR, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			f, err := openLogFile(svc.STDERR)
 			if err != nil {
 				return nil, fmt.Errorf("failed to open stderr file %s: %w", svc.STDERR, err)
 			}
@@ -117,6 +117,17 @@ func StartProcess(ctx context.Context, svc config.ServiceConfig, name string) (*
 	}
 
 	return proc, nil
+}
+
+// openLogFile opens a log file for append writes, creating its parent
+// directory first. The log file is handed straight to the service, so the
+// directory has to exist before the child starts — otherwise a LOG_DIR that
+// nobody created yet would make every service fail to start.
+func openLogFile(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create log directory: %w", err)
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 }
 
 // AdoptProcess creates a ProcessInfo for an already-running process identified by PID.

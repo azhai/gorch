@@ -37,6 +37,7 @@ type Supervisor struct {
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	adoptCandidates  map[string]int // PIDs from lock file for adoption on startup
+	logRotator       *logRotator    // daily rotation state for service log files
 }
 
 type Option func(*Supervisor)
@@ -64,6 +65,7 @@ func NewSupervisor(cfg *config.Config, opts ...Option) *Supervisor {
 		cronSched:        cron.NewScheduler(),
 		cronProcs:        make(map[string]*ProcessInfo),
 		statusCache:      status.NewCache(),
+		logRotator:       newLogRotator(),
 		pidPath:          config.DefaultPIDFile,
 		servicesLockPath: config.DefaultServicesLock,
 		socketPath:       config.DefaultSocketPath,
@@ -169,6 +171,14 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	go func() {
 		defer s.wg.Done()
 		s.heartbeat(ctx)
+	}()
+
+	// Rotate service logs once per day (and once at startup, to catch up on the
+	// days this supervisor was not running).
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.logRotationLoop(ctx)
 	}()
 
 	<-ctx.Done()

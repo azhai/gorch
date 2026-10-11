@@ -14,6 +14,22 @@ Use `-c /path/to/config.toml` to specify a different path.
 | `PID_FILE` | `/tmp/gorch/gorch.pid` | Supervisor PID file |
 | `SERVICES_LOCK` | `/tmp/gorch/gorch-services.lock` | Records managed service PIDs so a restart can adopt running processes |
 
+### Log Rotation
+
+Every service log (`STDOUT` / `STDERR`) is rotated once a day: when the calendar
+day changes, the current file is copied to `<path>.<YYYY-MM-DD>` and the original
+is truncated back to zero, so `STDOUT` always points at the current day's log.
+
+Copy-then-truncate (rather than rename) is what makes this safe for a running
+service. gorch hands the log file directly to the service, which keeps that file
+descriptor for its whole lifetime — and keeps it even if gorch itself is
+restarted — so the file has to stay at the same path; renaming it would leave
+the service writing into the rotated file forever. Because gorch does the
+rotating, a file that was written while gorch was down is split at the next
+startup using the day it was last written to.
+
+Non-regular targets such as `/dev/null` or a named pipe are never rotated.
+
 ## Web UI Fields
 
 | Field | Default | Description |
