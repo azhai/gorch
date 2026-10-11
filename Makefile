@@ -22,6 +22,10 @@ APP_LITE  = orchard
 NOWEB_TAG = noweb
 # frontend directory
 ADMIN_DIR = web
+# JS package manager. pnpm keeps a single global content-addressable store, so
+# each package version is stored once on disk and hard-linked into every
+# project's node_modules (shared across projects). Override: make front PKG=npm
+PKG       = pnpm
 # auto-discover cmd/ subdirs, excluding the main app directory
 COMMANDS  := $(filter-out orchard,$(notdir $(patsubst %/.,%,$(wildcard cmd/*/.))))
 
@@ -31,9 +35,18 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "d
 RELEASE    = -ldflags "-s -w -X main.version=$(VERSION)"
 GOBUILD    = go build $(RELEASE)
 
+# ARM64 micro-architecture baseline for the `arm64` target.
+#   v8.0 (default) — runs on every ARM64 chip; the Go runtime still dispatches
+#                    to AES/SHA/CRC32/LSE at runtime when the CPU exposes them.
+#   v9.0           — emits ARMv9 instructions (post-2021 cores only: Cortex-X2/
+#                    A710+, Neoverse N2/V2, AWS Graviton4, Apple M3 …).
+GOARM64   ?= v8.0
+# set COMPRESS=1 to additionally pack the `arm64` output with UPX (if installed)
+COMPRESS  ?= 0
+
 # ── Targets ───────────────────────────────────────────────
 
-.PHONY: one noweb all front build run dev clean test lint tidy
+.PHONY: one noweb all build arm64 front run dev clean test lint tidy
 
 ## one: local single-platform build (CGO disabled, current OS/ARCH)
 one: front
@@ -75,10 +88,24 @@ build: front
 	done
 	@echo "✅ Build success."
 
+## arm64: static, size-optimised Linux/arm64 build for recent (post-2020) CPUs.
+##   Uses the standard Go toolchain (TinyGo cannot link this app: the supervisor
+##   relies on fork/exec syscall internals that TinyGo does not provide).
+##   Tune the baseline with GOARM64=v8.0|v9.0 and pack with COMPRESS=1.
+arm64: front
+	@echo "Build $(APP) + $(APP_LITE) (linux/arm64, CGO=0, GOARM64=$(GOARM64), trimpath) ..."
+	mkdir -p bin
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOARM64=$(GOARM64) $(GOBUILD) -trimpath -o bin/$(APP)-$(VERSION).linux-arm64 $(APP_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOARM64=$(GOARM64) $(GOBUILD) -trimpath -tags $(NOWEB_TAG) -o bin/$(APP_LITE)-$(VERSION).linux-arm64 $(APP_DIR)
+ifeq ($(COMPRESS),1)
+	@command -v upx >/dev/null 2>&1 || { echo "upx not found — skipping compression"; exit 0; }
+	upx --best --lzma bin/$(APP)-$(VERSION).linux-arm64 bin/$(APP_LITE)-$(VERSION).linux-arm64
+endif
+
 ## front: build frontend assets (tsc type-check + vite build)
 front:
 	@echo "Build frontend ..."
-	cd $(ADMIN_DIR) && npm run build
+	cd $(ADMIN_DIR) && $(PKG) run build
 
 ## run: build frontend then run gorch with go run
 run: front
@@ -87,8 +114,8 @@ run: front
 ## dev: start hot-reload backend (air) + frontend dev server (vite)
 dev:
 	@which air > /dev/null 2>&1 || go install github.com/air-verse/air@latest
-	@if [ ! -d "$(ADMIN_DIR)/node_modules" ]; then cd $(ADMIN_DIR) && npm install; fi
-	(cd $(ADMIN_DIR) && npm run dev &)
+	@if [ ! -d "$(ADMIN_DIR)/node_modules" ]; then cd $(ADMIN_DIR) && $(PKG) install; fi
+	(cd $(ADMIN_DIR) && $(PKG) run dev &)
 	air
 
 ## clean: remove build artifacts and frontend dist

@@ -1,0 +1,7 @@
+# pnpm settings for the gorch web SPA (single project — no package globs here).
+# In pnpm >= 10 these settings live in this file, not package.json's "pnpm" field.
+# esbuild ships its native binary through an optional platform package, but we
+# explicitly approve its install script so `pnpm install` never reports
+# ERR_PNPM_IGNORED_BUILDS on fresh machines.
+allowBuilds:
+  esbuild: true
