@@ -130,7 +130,7 @@ export const ConfigView: m.Component = (() => {
     }
     const cfg = await fetchServiceConfig(name)
     cfg.DEPENDS_ON = cfg.DEPENDS_ON || []
-    cfg.ENV_VARS = cfg.ENV_VARS || []
+    cfg.ENV_VARS = cfg.ENV_VARS || {}
     state.config = cfg
     state.originalConfig = JSON.parse(JSON.stringify(cfg))
     m.redraw()
