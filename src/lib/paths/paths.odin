@@ -11,6 +11,10 @@ DefaultServicesLock :: RuntimeDir + "/gorch-services.lock"
 DefaultSocketPath   :: RuntimeDir + "/gorch.sock"
 DefaultLogDir       :: RuntimeDir + "/logs"
 
+// DefaultStateFile holds the persisted service state (see src/lib/state). It is
+// an oboe cache snapshot, not a database: small, atomic, rewritten in place.
+DefaultStateFile :: RuntimeDir + "/gorch.state"
+
 // ServicePidDir is where per-service pid files live.
 ServicePidDir :: RuntimeDir + "/services"
 

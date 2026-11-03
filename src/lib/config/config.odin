@@ -379,13 +379,15 @@ dfs_visit :: proc(name: string, cfg: ^Config, state: ^map[string]int, order: ^[d
 	return ""
 }
 
-sorted_service_names :: proc(cfg: ^Config) -> []string {
+// The caller owns the result and must `delete` it. Returning a slice would
+// hide the backing array's capacity and make a correct free impossible.
+sorted_service_names :: proc(cfg: ^Config) -> [dynamic]string {
 	d := [dynamic]string{}
 	for name in cfg.services {
 		append(&d, name)
 	}
 	insertion_sort_strings(d[:])
-	return d[:]
+	return d
 }
 
 insertion_sort_strings :: proc(a: []string) {

@@ -75,7 +75,7 @@ Job :: struct {
 Scheduler :: struct {
 	mu:      sync.RW_Mutex,
 	jobs:    map[string]^Job,
-	records: map[string][]CronExecutionRecord,
+	records: map[string][dynamic]CronExecutionRecord,
 	running: map[string]bool,
 
 	loop_mu:        sync.Mutex,
@@ -343,9 +343,9 @@ expand_descriptor :: proc(expr: string) -> string {
 	return ""
 }
 
-// split_ws tokenises on ASCII whitespace runs, returning subslices of `s`
-// (no allocation; the caller owns `s` for the duration).
-split_ws :: proc(s: string) -> []string {
+// split_ws tokenises on ASCII whitespace runs. The returned tokens are subslices
+// of `s`, but the array itself is allocated: the caller must `delete` it.
+split_ws :: proc(s: string) -> [dynamic]string {
 	out: [dynamic]string
 	i := 0
 	n := len(s)
@@ -365,7 +365,7 @@ split_ws :: proc(s: string) -> []string {
 		delete(out)
 		return nil
 	}
-	return out[:]
+	return out
 }
 
 // parse compiles a cron expression into a Schedule. Supports 6-field
@@ -394,6 +394,7 @@ parse :: proc(expr: string) -> (s: Schedule, ok: bool) {
 	}
 
 	tokens := split_ws(e)
+	defer delete(tokens)
 
 	if len(tokens) != 5 && len(tokens) != 6 {
 		return Schedule{}, false
@@ -405,7 +406,7 @@ parse :: proc(expr: string) -> (s: Schedule, ok: bool) {
 		sec_spec = tokens[0]
 		rest = tokens[1:]
 	} else {
-		rest = tokens
+		rest = tokens[:]
 	}
 
 	if len(rest) != 5 {
@@ -520,7 +521,7 @@ new_scheduler :: proc() -> ^Scheduler {
 	context.allocator = runtime.default_allocator()
 	s := new(Scheduler)
 	s.jobs = make(map[string]^Job)
-	s.records = make(map[string][]CronExecutionRecord)
+	s.records = make(map[string][dynamic]CronExecutionRecord)
 	s.running = make(map[string]bool)
 	s.now_fn = default_now
 	s.offset_fn = default_offset
@@ -565,17 +566,32 @@ add_job :: proc(s: ^Scheduler, name, expression, tz: string, fn: proc(user: rawp
 	j.fn = fn
 	j.user = user
 	j.next_unix = next
+	// Replacing a job must release the previous one: config reloads go through
+	// here, and the old strings would otherwise be unreachable.
+	if old, ex := s.jobs[name]; ex {
+		free_job(old)
+	}
 	s.jobs[name] = j
 	return true
+}
+
+@(private = "file")
+free_job :: proc(j: ^Job) {
+	delete(j.name)
+	delete(j.expression)
+	delete(j.timezone)
+	free(j)
 }
 
 // remove_job drops a job by name; returns whether it existed.
 remove_job :: proc(s: ^Scheduler, name: string) -> bool {
 	sync.rw_mutex_lock(&s.mu)
 	defer sync.rw_mutex_unlock(&s.mu)
-	if _, ok := s.jobs[name]; !ok {
+	j, ok := s.jobs[name]
+	if !ok {
 		return false
 	}
+	free_job(j)
 	delete_key(&s.jobs, name)
 	return true
 }
@@ -593,14 +609,14 @@ job_count :: proc(s: ^Scheduler) -> int {
 	return len(s.jobs)
 }
 
-job_names :: proc(s: ^Scheduler) -> []string {
+job_names :: proc(s: ^Scheduler) -> [dynamic]string {
 	sync.rw_mutex_shared_lock(&s.mu)
 	defer sync.rw_mutex_shared_unlock(&s.mu)
 	out: [dynamic]string
 	for name, _ in s.jobs {
 		append(&out, strings.clone(name))
 	}
-	return out[:]
+	return out
 }
 
 job_next :: proc(s: ^Scheduler, name: string) -> i64 {
@@ -722,31 +738,66 @@ fire :: proc(s: ^Scheduler, j: ^Job) {
 }
 
 // record_execution appends a run record, retaining the most recent max_history.
+// The history is a per-service dynamic array: evicting the oldest entry frees its
+// strings, and appending reuses the buffer instead of leaking the old array.
 record_execution :: proc(s: ^Scheduler, name: string, rec: CronExecutionRecord) {
 	sync.rw_mutex_lock(&s.mu)
 	defer sync.rw_mutex_unlock(&s.mu)
-	old := s.records[name]
-	tmp := make([]CronExecutionRecord, len(old)+1)
-	for idx in 0..<len(old) {
-		tmp[idx] = old[idx]
+	hist, ok := s.records[name]
+	if !ok {
+		hist = make([dynamic]CronExecutionRecord)
 	}
-	tmp[len(old)] = rec
-	if len(tmp) > max_history {
-		tmp = tmp[len(tmp)-max_history:]
+	append(&hist, rec)
+	for len(hist) > max_history {
+		free_record(hist[0])
+		ordered_remove(&hist, 0)
 	}
-	s.records[name] = tmp
+	s.records[name] = hist
 }
 
+@(private = "file")
+free_record :: proc(rec: CronExecutionRecord) {
+	delete(rec.service)
+	delete(rec.status)
+	if rec.ended_at != nil {
+		free(rec.ended_at)
+	}
+	if rec.exit_code != nil {
+		free(rec.exit_code)
+	}
+}
+
+// get_history returns a shallow copy: the slice is owned by the caller, the
+// strings inside are not, so `delete` the slice but never its elements.
 get_history :: proc(s: ^Scheduler, name: string) -> []CronExecutionRecord {
 	sync.rw_mutex_shared_lock(&s.mu)
 	defer sync.rw_mutex_shared_unlock(&s.mu)
-	recs, ok := s.records[name]
+	hist, ok := s.records[name]
 	if !ok {
-		return []CronExecutionRecord{}
+		return nil
 	}
-	out := make([]CronExecutionRecord, len(recs))
-	if len(recs) > 0 {
-		mem.copy(raw_data(out), raw_data(recs), len(recs)*size_of(CronExecutionRecord))
+	out := make([]CronExecutionRecord, len(hist))
+	if len(hist) > 0 {
+		mem.copy(raw_data(out), raw_data(hist), len(hist)*size_of(CronExecutionRecord))
 	}
 	return out
+}
+
+// destroy_scheduler stops the loop and frees every job, record and map. Only for
+// embedders and tests; the daemon lives as long as the process.
+destroy_scheduler :: proc(s: ^Scheduler) {
+	stop(s)
+	for _, hist in s.records {
+		for rec in hist {
+			free_record(rec)
+		}
+		delete(hist)
+	}
+	delete(s.records)
+	for _, j in s.jobs {
+		free_job(j)
+	}
+	delete(s.jobs)
+	delete(s.running)
+	free(s)
 }

@@ -1,4 +1,8 @@
-package log
+// Package glog is gorch's own logger.
+//
+// It cannot be called `log`: importing config drags in core:log transitively,
+// and Odin rejects two packages with the same name in one program.
+package glog
 
 import "core:os"
 import "core:fmt"
@@ -70,7 +74,9 @@ log_at :: proc(l: Level, msg: string, kv: ..any) {
 	db: [16]u8
 	ymd := time.to_string_yyyy_mm_dd(now, db[:])
 	buf: strings.Builder
-	strings.builder_init_len(&buf, 256, context.temp_allocator)
+	// builder_init_len sets the *length*, not the capacity - using it here padded
+	// every line with 256 NUL bytes. Reserve capacity, start empty.
+	strings.builder_init_len_cap(&buf, 0, 256, context.temp_allocator)
 	defer strings.builder_destroy(&buf)
 
 	fmt.sbprintf(&buf, "{} {} level={} msg={}", ymd, hms, level_tag(l), msg)

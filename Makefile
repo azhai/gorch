@@ -5,8 +5,13 @@
 #   src/lib/*     — support packages; the ones with *_test.odin run under `odin test`
 #   web/          — Alpine SPA (Material 3 Monet theme), served straight from disk
 #
-# The frontend has no build step — Alpine is vendored in web/vendor/ — so no
-# target below touches web/; the server embeds or serves that directory as-is.
+# The state cache comes from the oboe submodule (vendor/oboe), wired in through
+# -collection:oboe; run `make deps` once after cloning.
+#
+# The frontend has no build step — Alpine is vendored in web/vendor/ — and no
+# target below touches it. web/ is baked into the binary at compile time
+# (src/lib/web/embed.odin), so `make one` is enough to update a deployed copy;
+# a web/ directory next to the binary or the config wins over the embedded one.
 
 # ── Project config ────────────────────────────────────────
 
@@ -19,6 +24,11 @@ BIN     = bin
 # Odin toolchain and the minimum version this project is written against
 ODIN     = odin
 MIN_ODIN = dev-2026-10
+
+# oboe (git submodule) supplies the runtime state cache: an in-memory key/value
+# store with an atomic, compressed snapshot on disk. gorch uses it instead of
+# SQLite or pid files. `make deps` fetches it.
+OBOE_DIR ?= vendor/oboe
 
 # packages that own at least one *_test.odin file
 TEST_PKGS := $(sort $(patsubst %/,%,$(dir $(wildcard src/lib/*/*_test.odin))))
@@ -37,11 +47,23 @@ CROSS_CC ?= $(ZIG) cc
 
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 # release flags: light optimisation and no -debug (Odin's defaults, stated explicitly)
-ODIN_FLAGS  = -o:minimal
+# the collection makes `import "oboe:cache"` resolve inside the submodule
+ODIN_FLAGS  = -o:minimal -collection:oboe=$(OBOE_DIR)
 
 # ── Targets ───────────────────────────────────────────────
 
-.PHONY: all odin-version one build linux run test check clean
+.PHONY: all odin-version deps one build linux run test check clean
+
+## deps: fetch the oboe submodule (needed before the first build)
+deps:
+	git submodule update --init --recursive
+	@echo "✅ deps ready"
+
+## check-deps: fail fast with a useful message when the submodule is missing
+check-deps:
+	@test -f $(OBOE_DIR)/cache/cache.odin || { \
+		echo "vendor/oboe is missing; run 'make deps' first" >&2; exit 1; \
+	}
 
 ## all: full pipeline — clean, then local build, then the release matrix
 all: clean one build
@@ -56,13 +78,13 @@ odin-version:
 	echo "odin $$ver ok"
 
 ## one: local single-platform build
-one: odin-version
+one: odin-version check-deps
 	@echo "Build $(APP) (local) ..."
 	mkdir -p $(BIN)
 	$(ODIN) build $(APP_PKG) $(ODIN_FLAGS) -out:$(BIN)/$(APP)
 
 ## build: compile every release TARGET
-build: odin-version
+build: odin-version check-deps
 	@echo "Compiling $(TARGETS) ..."
 	mkdir -p $(BIN)
 	@for target in $(TARGETS); do \
@@ -94,16 +116,16 @@ run: odin-version
 	$(ODIN) run $(APP_PKG)
 
 ## test: run the tests of every package that has them
-test:
+test: check-deps
 	@for pkg in $(TEST_PKGS); do \
-		echo "--- $$pkg" && $(ODIN) test $$pkg || exit 1; \
+		echo "--- $$pkg" && $(ODIN) test $$pkg -collection:oboe=$(OBOE_DIR) || exit 1; \
 	done
 
 ## check: type check every package; `odin check` errors other than the missing
 #  entry point (library packages have no main) fail the target
-check:
+check: check-deps
 	@fail=0; for pkg in $(sort $(dir $(wildcard src/cmd/*/*.odin src/lib/*/*.odin))); do \
-		errs=$$($(ODIN) check $$pkg 2>&1 | grep 'Error:' | grep -v "Undefined entry point procedure 'main'"); \
+		errs=$$($(ODIN) check $$pkg -collection:oboe=$(OBOE_DIR) 2>&1 | grep 'Error:' | grep -v "Undefined entry point procedure 'main'"); \
 		if [ -n "$$errs" ]; then echo "--- $$pkg"; echo "$$errs"; fail=1; fi; \
 	done; \
 	if [ $$fail -eq 1 ]; then echo "❌ check failed" >&2; exit 1; fi; \

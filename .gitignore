@@ -2,6 +2,7 @@
 .pytest_cache
 .arts/
 .codeartsdoer/
+.workbuddy/
 .codebuddy/
 .idea/
 .vscode/

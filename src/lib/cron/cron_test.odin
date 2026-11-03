@@ -129,72 +129,87 @@ test_history_trim :: proc(t: ^testing.T) {
 		testing.expect(t, h[len(h)-1].started_at == 14, fmt.tprintf("last started_at {}", h[len(h)-1].started_at))
 		testing.expect(t, h[0].started_at == 5, fmt.tprintf("first kept started_at {}", h[0].started_at))
 	}
+	// The slice is ours, the strings inside belong to the scheduler.
+	delete(h)
+	destroy_scheduler(s)
 }
 
-// mutable clock for scheduler firing tests.
-test_clock: i64 = ts_1000
-test_count := 0
-test_mu: sync.Mutex
+// The runner executes tests on parallel threads, so the fake clock and the fire
+// counter are per-test state. They used to be shared globals, which let
+// test_catchup_collapses and test_same_expr_preserves_next overwrite each other's
+// clock and report phantom failures ("next 1788001200", "no double fire, got 2").
 
-fake_now :: proc() -> i64 { return test_clock }
+// state for test_catchup_collapses
+catchup_clock: i64
+catchup_count: int
+catchup_mu: sync.Mutex
+
+catchup_now :: proc() -> i64 { return catchup_clock }
 zero_offset :: proc(_: i64) -> i64 { return 0 }
-count_fn :: proc(_: rawptr) {
-	sync.mutex_lock(&test_mu)
-	test_count += 1
-	sync.mutex_unlock(&test_mu)
+catchup_fire :: proc(_: rawptr) {
+	sync.mutex_lock(&catchup_mu)
+	catchup_count += 1
+	sync.mutex_unlock(&catchup_mu)
 }
+
+// state for test_same_expr_preserves_next (never actually fires a job)
+preserves_clock: i64
+preserves_now :: proc() -> i64 { return preserves_clock }
+noop_fire :: proc(_: rawptr) {}
 
 @(test)
 test_catchup_collapses :: proc(t: ^testing.T) {
 	set_arena(t)
-	test_clock = 1787983200 // 2026-08-29 06:00:00
-	test_count = 0
+	catchup_clock = 1787983200 // 2026-08-29 06:00:00
+	catchup_count = 0
 
 	s := new_scheduler()
-	s.now_fn = fake_now
+	s.now_fn = catchup_now
 	s.offset_fn = zero_offset
 
-	ok := add_job(s, "up", "0 0 * * * *", "", count_fn, nil)
+	ok := add_job(s, "up", "0 0 * * * *", "", catchup_fire, nil)
 	testing.expect(t, ok)
 	// next should be 07:00
 	testing.expect(t, job_next(s, "up") == 1787986800, fmt.tprintf("next {}", job_next(s, "up")))
 
 	// Machine asleep 06:00 -> 15:30; hours 07..15 all missed -> one catch-up run.
-	test_clock = 1788017400 // 2026-08-29 15:30:00
-	run_due(s, test_clock)
+	catchup_clock = 1788017400 // 2026-08-29 15:30:00
+	run_due(s, catchup_clock)
 	sync.wait_group_wait(&s.wg)
 
-	testing.expect(t, test_count == 1, fmt.tprintf("catch-up fires {} want 1", test_count))
+	testing.expect(t, catchup_count == 1, fmt.tprintf("catch-up fires {} want 1", catchup_count))
 	// rescheduled strictly in the future: 16:00
 	testing.expect(t, job_next(s, "up") == 1788019200, fmt.tprintf("resched next {}", job_next(s, "up")))
 
 	// Another tick at same instant must not re-fire.
-	run_due(s, test_clock)
+	run_due(s, catchup_clock)
 	sync.wait_group_wait(&s.wg)
-	testing.expect(t, test_count == 1, fmt.tprintf("no double fire, got {}", test_count))
+	testing.expect(t, catchup_count == 1, fmt.tprintf("no double fire, got {}", catchup_count))
+	destroy_scheduler(s)
 }
 
 @(test)
 test_same_expr_preserves_next :: proc(t: ^testing.T) {
 	set_arena(t)
-	test_clock = ts_1000
+	preserves_clock = ts_1000
 	s := new_scheduler()
-	s.now_fn = fake_now
+	s.now_fn = preserves_now
 	s.offset_fn = zero_offset
 
-	ok := add_job(s, "j", "0 30 10 * * *", "", count_fn, nil)
+	ok := add_job(s, "j", "0 30 10 * * *", "", noop_fire, nil)
 	testing.expect(t, ok)
 	first := job_next(s, "j")
 
 	// Simulate a rebuild that lands just before the due time: clock advances
 	// but stays before `first`; re-adding the SAME schedule must not push next.
-	test_clock = first - 60
-	ok2 := add_job(s, "j", "0 30 10 * * *", "", count_fn, nil)
+	preserves_clock = first - 60
+	ok2 := add_job(s, "j", "0 30 10 * * *", "", noop_fire, nil)
 	testing.expect(t, ok2)
 	testing.expect(t, job_next(s, "j") == first, "unchanged schedule must keep next")
 
 	// Changing the expression DOES recompute next.
-	ok3 := add_job(s, "j", "0 0 3 * * *", "", count_fn, nil)
+	ok3 := add_job(s, "j", "0 0 3 * * *", "", noop_fire, nil)
 	testing.expect(t, ok3)
 	testing.expect(t, job_next(s, "j") != first, "changed schedule recomputes next")
+	destroy_scheduler(s)
 }

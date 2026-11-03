@@ -1,14 +1,24 @@
 package toml
 
 import "core:testing"
-import "core:mem"
+import "core:mem/virtual"
 
 @(test)
 test_parse_basic :: proc(t: ^testing.T) {
-	buf: [1 << 20]byte
-	ar: mem.Arena
-	mem.arena_init(&ar, buf[:])
-	context.allocator = mem.arena_allocator(&ar)
+	// The parser allocates freely and never frees, so give it an arena. A growing
+	// virtual arena (chained virtual reservations) keeps the 1 MiB working set off
+	// the thread stack, which is what the old `buf: [1 << 20]byte` was doing.
+	ar: virtual.Arena
+	if err := virtual.arena_init_growing(&ar); err != .None {
+		testing.fail_now(t, "cannot create the test arena")
+	}
+	defer virtual.arena_destroy(&ar)
+
+	// Hand the arena to this test only; restore the caller's allocator on the way
+	// out so later tests do not allocate from a destroyed arena.
+	prev_allocator := context.allocator
+	context.allocator = virtual.arena_allocator(&ar)
+	defer context.allocator = prev_allocator
 
 	text := `
 # comment
