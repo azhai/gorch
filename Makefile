@@ -23,10 +23,15 @@ MIN_ODIN = dev-2026-10
 # packages that own at least one *_test.odin file
 TEST_PKGS := $(sort $(patsubst %/,%,$(dir $(wildcard src/lib/*/*_test.odin))))
 
-# Odin cannot cross-link Linux/Windows from macOS, so the release matrix defaults
-# to this OS's architectures; build elsewhere or override:
-#   make build TARGETS="linux_amd64 linux_arm64"
+# Linux/Windows cannot be linked by Odin itself on this host ("Linking for cross
+# compilation for this platform is not yet supported"), so foreign targets are
+# compiled to objects and linked by a cross toolchain instead — zig cc with static
+# musl, which needs nothing installed on the target machine. Override for CI:
+#   make build TARGETS="linux_amd64" CROSS_CC="x86_64-linux-musl-gcc"
 TARGETS ?= darwin_arm64 darwin_amd64
+# the cross linker used for non-darwin targets
+ZIG      ?= zig
+CROSS_CC ?= $(ZIG) cc
 
 # ── Build flags ───────────────────────────────────────────
 
@@ -36,7 +41,7 @@ ODIN_FLAGS  = -o:minimal
 
 # ── Targets ───────────────────────────────────────────────
 
-.PHONY: all odin-version one build run test check clean
+.PHONY: all odin-version one build linux run test check clean
 
 ## all: full pipeline — clean, then local build, then the release matrix
 all: clean one build
@@ -62,9 +67,27 @@ build: odin-version
 	mkdir -p $(BIN)
 	@for target in $(TARGETS); do \
 		os=$${target%_*}; arch=$${target#*_}; \
-		$(ODIN) build $(APP_PKG) $(ODIN_FLAGS) -target:$$target -out:$(BIN)/$(APP)-$(VERSION).$$os-$$arch || exit 1; \
+		out=$(BIN)/$(APP)-$(VERSION).$$os-$$arch; \
+		if [ "$$os" = darwin ]; then \
+			$(ODIN) build $(APP_PKG) $(ODIN_FLAGS) -target:$$target -out:$$out || exit 1; \
+			continue; \
+		fi; \
+		case $$arch in \
+			amd64) triple=x86_64-linux-musl ;; \
+			arm64) triple=aarch64-linux-musl ;; \
+			*) echo "no musl triple for $$os/$$arch" >&2; exit 1 ;; \
+		esac; \
+		objs=$$(mktemp -d); \
+		$(ODIN) build $(APP_PKG) $(ODIN_FLAGS) -target:$$target -build-mode:object -out:$$objs/app.o || exit 1; \
+		$(CROSS_CC) -target $$triple -static -Wl,--strip-all $$objs/*.o -o $$out -lpthread -ldl -lm || exit 1; \
+		rm -rf $$objs; \
+		echo "  $$out ($$triple, static)"; \
 	done
 	@echo "✅ Build success."
+
+## linux: static musl release for both Linux architectures
+linux: odin-version
+	@$(MAKE) --no-print-directory build TARGETS="linux_amd64 linux_arm64"
 
 ## run: build and run the supervisor
 run: odin-version
