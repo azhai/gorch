@@ -8,6 +8,7 @@ import "core:time"
 
 import "../../lib/config"
 import glog "../../lib/log"
+import "../../lib/logfile"
 import "../../lib/state"
 import "../../lib/status"
 
@@ -43,6 +44,7 @@ BACKOFF :: 5 // seconds, used when BACK_OFF is absent
 STOP_GRACE :: 5 // seconds between SIGTERM and SIGKILL
 POLL :: 500 * time.Millisecond
 SAVE_EVERY :: time.Second
+ROTATE_EVERY :: 60 // seconds; a daemon log only needs to roll over to the minute
 
 // Service is the runtime half of a config.ServiceConfig.
 Service :: struct {
@@ -77,6 +79,8 @@ Supervisor :: struct {
 	default_back_off: int,
 	now_fn:       proc() -> i64,
 	halt:         bool,
+	rotator:      logfile.Rotator,
+	last_rotate:  i64, // unix seconds of the last log rotation pass
 }
 
 now_seconds :: proc(sv: ^Supervisor) -> i64 {
@@ -94,6 +98,7 @@ init :: proc(sv: ^Supervisor, cfg: ^config.Config, state_path: string) -> string
 	sv.window = WINDOW
 	sv.default_back_off = BACKOFF
 	sv.services = make(map[string]^Service)
+	logfile.rotator_init(&sv.rotator)
 
 	names := config.sorted_service_names(cfg)
 	defer delete(names)
@@ -591,9 +596,90 @@ destroy :: proc(sv: ^Supervisor) {
 	}
 	delete(sv.services)
 	delete(sv.order)
+	logfile.rotator_destroy(&sv.rotator)
 	sv.services = nil
 	sv.order = nil
 	sv.cfg = nil
+}
+
+// ---- logs ----
+
+// log_path resolves the file a service writes to. `kind` is "stdout" or
+// "stderr"; when only one of the two is configured the other falls back to it,
+// because that is the file the operator will want to read either way.
+log_path :: proc(sv: ^Supervisor, name, kind: string) -> (string, bool) {
+	sync.rw_mutex_shared_lock(&sv.mu)
+	defer sync.rw_mutex_shared_unlock(&sv.mu)
+	s, ok := sv.services[name]
+	if !ok {
+		return "", false
+	}
+	path := s.spec.stdout
+	if kind == "stderr" {
+		path = s.spec.stderr
+	}
+	if len(path) == 0 {
+		path = s.spec.stderr
+	}
+	if len(path) == 0 {
+		path = s.spec.stdout
+	}
+	return path, true
+}
+
+// read_logs returns the last `lines` lines of a service log. The caller owns the
+// tail and must pass it to logfile.tail_destroy.
+read_logs :: proc(sv: ^Supervisor, name, kind: string, lines: int) -> (logfile.Tail, string, string) {
+	path, ok := log_path(sv, name, kind)
+	if !ok {
+		return {}, "", fmt.tprintf("unknown service: {}", name)
+	}
+	if len(path) == 0 {
+		// Nothing configured and nothing written: an empty log, not an error.
+		return {}, "", ""
+	}
+	t, err := logfile.tail(path, lines)
+	return t, path, err
+}
+
+clear_logs :: proc(sv: ^Supervisor, name, kind: string) -> string {
+	path, ok := log_path(sv, name, kind)
+	if !ok {
+		return fmt.tprintf("unknown service: {}", name)
+	}
+	return logfile.clear(path)
+}
+
+// rotate_logs gives every configured log file a new day's file. It runs once at
+// startup (to catch up on days gorch was not running) and then once a minute.
+@(private = "file")
+rotate_logs :: proc(sv: ^Supervisor, now: time.Time) {
+	paths := make([dynamic]string, 0, len(sv.order) * 2)
+	defer delete(paths)
+
+	sync.rw_mutex_shared_lock(&sv.mu)
+	for name in sv.order {
+		s := sv.services[name]
+		if len(s.spec.stdout) > 0 {
+			append(&paths, s.spec.stdout)
+		}
+		// stdout and stderr often point at the same file; rotating it twice
+		// would just be a no-op, but skipping the duplicate keeps the log quiet.
+		if len(s.spec.stderr) > 0 && s.spec.stderr != s.spec.stdout {
+			append(&paths, s.spec.stderr)
+		}
+	}
+	sync.rw_mutex_shared_unlock(&sv.mu)
+
+	for path in paths {
+		moved, err := logfile.rotate(&sv.rotator, path, now)
+		if len(err) > 0 {
+			glog.warn("cannot rotate log", "path", path, "err", err)
+		} else if len(moved) > 0 {
+			glog.info("rotated log", "path", path, "to", moved)
+		}
+		delete(moved)
+	}
 }
 
 // Loop runs the supervisor until halt is set. Meant to be the body of a thread.
@@ -618,12 +704,21 @@ halt_loop :: proc(l: ^Loop) {
 }
 
 loop_run :: proc(l: ^Loop) {
+	// Catch up first: a file last written to before gorch was restarted still
+	// belongs to the day it was written on.
+	rotate_logs(l.sv, time.now())
+	l.sv.last_rotate = now_seconds(l.sv)
+
 	for sync.atomic_load(&l.halted) == 0 {
 		changed := tick(l.sv)
 		if changed {
 			_ = flush(l.sv)
 		} else if l.sv.has_store {
 			_ = state.save_if_due(&l.sv.store, SAVE_EVERY)
+		}
+		if now := now_seconds(l.sv); now-l.sv.last_rotate >= ROTATE_EVERY {
+			rotate_logs(l.sv, time.now())
+			l.sv.last_rotate = now
 		}
 		time.sleep(POLL)
 	}

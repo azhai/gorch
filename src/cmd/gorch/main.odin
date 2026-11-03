@@ -17,6 +17,7 @@ import "core:time"
 
 import cfg "../../lib/config"
 import glog "../../lib/log"
+import "../../lib/logfile"
 import paths "../../lib/paths"
 import status "../../lib/status"
 import supervisor "../../lib/supervisor"
@@ -60,6 +61,7 @@ main :: proc() {
 	}
 
 	glog.init()
+	install_utc_offset()
 
 	if err := paths.ensure_runtime_dir(); err != nil {
 		glog.error("cannot create runtime dir", "dir", paths.RuntimeDir, "err", err)
@@ -106,12 +108,17 @@ main :: proc() {
 
 	if config.web.web_enable {
 		provider := web.Provider {
-			user   = sup,
-			list   = provider_list,
-			get    = provider_get,
-			action = provider_action,
+			user       = sup,
+			list       = provider_list,
+			get        = provider_get,
+			action     = provider_action,
+			logs       = provider_logs,
+			clear_logs = provider_clear_logs,
 		}
-		serve_args := Serve_Args {
+		// The provider outgrew the inline poly-data slot, so the arguments live
+		// on the heap for the lifetime of the process - like the server itself.
+		serve_args := new(Serve_Args)
+		serve_args^ = Serve_Args {
 			cfg        = &config,
 			static_dir = resolve_static_dir(&config),
 			provider   = provider,
@@ -162,13 +169,27 @@ provider_action :: proc(user: rawptr, name, action: string) -> string {
 	return fmt.tprintf("unknown action: {}", action)
 }
 
+provider_logs :: proc(
+	user: rawptr,
+	name, kind: string,
+	lines: int,
+) -> (logfile.Tail, string, string) {
+	sup := cast(^supervisor.Supervisor)user
+	return supervisor.read_logs(sup, name, kind, lines)
+}
+
+provider_clear_logs :: proc(user: rawptr, name, kind: string) -> string {
+	sup := cast(^supervisor.Supervisor)user
+	return supervisor.clear_logs(sup, name, kind)
+}
+
 Serve_Args :: struct {
 	cfg:        ^cfg.Config,
 	static_dir: string,
 	provider:   web.Provider,
 }
 
-serve_thread :: proc(args: Serve_Args) {
+serve_thread :: proc(args: ^Serve_Args) {
 	if serr := web.serve(args.cfg, args.static_dir, args.provider); len(serr) > 0 {
 		glog.error("web server failed", "err", serr)
 		sync.atomic_store(&halt, 1)

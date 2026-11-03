@@ -18,6 +18,7 @@ import "core:time"
 import "../../lib/config"
 import "../../lib/jwt"
 import glog "../../lib/log"
+import "../../lib/logfile"
 import "../../lib/status"
 
 // Provider is how the web layer reads and drives services. The supervisor package
@@ -28,6 +29,10 @@ Provider :: struct {
 	list:   proc(user: rawptr) -> []status.ServiceStatus,
 	get:    proc(user: rawptr, name: string) -> (status.ServiceStatus, bool),
 	action: proc(user: rawptr, name, action: string) -> string, // "" on success
+	// logs hands back a tail the caller must destroy, plus the path it came
+	// from so the UI can show where a service is writing.
+	logs:       proc(user: rawptr, name, kind: string, lines: int) -> (logfile.Tail, string, string),
+	clear_logs: proc(user: rawptr, name, kind: string) -> string,
 }
 
 Server :: struct {
@@ -150,6 +155,12 @@ content_length :: proc(raw: string) -> int {
 	if !ok {
 		return 0
 	}
+	return parse_int(value)
+}
+
+// parse_int reads a leading run of digits, which is all the query strings and
+// headers here need.
+parse_int :: proc(value: string) -> int {
 	n := 0
 	for i in 0 ..< len(value) {
 		if value[i] < '0' || value[i] > '9' {
@@ -227,7 +238,7 @@ handle_api :: proc(
 		send_json_ok(conn, 200, services_json(srv))
 
 	case strings.has_prefix(path, "/api/services/"):
-		handle_service(srv, conn, method, path, raw)
+		handle_service(srv, conn, method, path, query, raw)
 
 	case path == "/api/events":
 		handle_sse(srv, conn, query)
@@ -350,7 +361,11 @@ service_status :: proc(srv: ^Server, name: string) -> (status.ServiceStatus, boo
 }
 
 // handle_service covers /api/services/<name> and /api/services/<name>/<action>.
-handle_service :: proc(srv: ^Server, conn: net.TCP_Socket, method, path, raw: string) {
+handle_service :: proc(
+	srv: ^Server,
+	conn: net.TCP_Socket,
+	method, path, query, raw: string,
+) {
 	rest := strings.trim_prefix(path, "/api/services/")
 	name := rest
 	action := ""
@@ -379,6 +394,23 @@ handle_service :: proc(srv: ^Server, conn: net.TCP_Socket, method, path, raw: st
 		return
 	}
 
+	if action == "logs" {
+		if method != "GET" {
+			send_json_error(conn, 405, "method not allowed")
+			return
+		}
+		handle_logs(srv, conn, name, query)
+		return
+	}
+	if action == "logs/clear" {
+		if method != "POST" {
+			send_json_error(conn, 405, "method not allowed")
+			return
+		}
+		handle_clear_logs(srv, conn, name, query)
+		return
+	}
+
 	if method != "POST" {
 		send_json_error(conn, 405, "method not allowed")
 		return
@@ -403,6 +435,59 @@ handle_service :: proc(srv: ^Server, conn: net.TCP_Socket, method, path, raw: st
 	write_json_string(&b, name)
 	fmt.sbprintf(&b, `,"action":"{}"}`, action)
 	send_json_ok(conn, 200, strings.to_string(b))
+}
+
+// log_kind reads ?type=stdout|stderr, defaulting to stdout like the Go server.
+log_kind :: proc(query: string) -> string {
+	if v, ok := query_param(query, "type"); ok && v == "stderr" {
+		return "stderr"
+	}
+	return "stdout"
+}
+
+handle_logs :: proc(srv: ^Server, conn: net.TCP_Socket, name, query: string) {
+	if srv.provider.logs == nil {
+		send_json_error(conn, 503, "supervisor is not running")
+		return
+	}
+	lines := 500
+	if v, ok := query_param(query, "lines"); ok {
+		if parsed := parse_int(v); parsed > 0 {
+			lines = parsed
+		}
+	}
+
+	t, path, err := srv.provider.logs(srv.provider.user, name, log_kind(query), lines)
+	defer logfile.tail_destroy(&t)
+	if len(err) > 0 {
+		send_json_error(conn, 400, err)
+		return
+	}
+
+	b := strings.builder_make()
+	strings.write_string(&b, `{"lines":[`)
+	for line, i in t.lines {
+		if i > 0 {
+			strings.write_byte(&b, ',')
+		}
+		write_json_string(&b, line)
+	}
+	strings.write_string(&b, `],"logPath":`)
+	write_json_string(&b, path)
+	strings.write_byte(&b, '}')
+	send_json_ok(conn, 200, strings.to_string(b))
+}
+
+handle_clear_logs :: proc(srv: ^Server, conn: net.TCP_Socket, name, query: string) {
+	if srv.provider.clear_logs == nil {
+		send_json_error(conn, 503, "supervisor is not running")
+		return
+	}
+	if err := srv.provider.clear_logs(srv.provider.user, name, log_kind(query)); len(err) > 0 {
+		send_json_error(conn, 400, err)
+		return
+	}
+	send_json_ok(conn, 200, `{"message":"logs cleared"}`)
 }
 
 // handle_sse publishes the events the SPA listens for. Without a supervisor

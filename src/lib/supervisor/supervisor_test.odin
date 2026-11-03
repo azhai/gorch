@@ -5,6 +5,7 @@ import "core:testing"
 import "core:time"
 
 import "../../lib/config"
+import "../../lib/logfile"
 import "../../lib/status"
 
 // Tests drive real processes but only harmless ones (`sleep`, `exit 1`), and each
@@ -138,6 +139,51 @@ test_restart_budget_escalates :: proc(t: ^testing.T) {
 		}
 		time.sleep(20 * time.Millisecond)
 	}
+}
+
+@(test)
+test_log_path_and_tail :: proc(t: ^testing.T) {
+	dir := "/tmp/gorch_sup_logs"
+	_ = os.make_directory(dir)
+	defer _ = os.remove_all(dir)
+	_ = os.write_entire_file("/tmp/gorch_sup_logs/svc.out.log", "alpha\nbeta\n")
+
+	cfg := new(config.Config)
+	defer free_test_config(cfg)
+	cfg.services = make(map[string]config.ServiceConfig)
+	cfg.services["t_logs"] = config.ServiceConfig {
+		exec_cmd = "sleep 1",
+		work_dir = "/tmp",
+		stdout   = "/tmp/gorch_sup_logs/svc.out.log",
+	}
+
+	sv := new(Supervisor)
+	defer free(sv)
+	init(sv, cfg, "")
+	defer destroy(sv)
+
+	path, ok := log_path(sv, "t_logs", "stdout")
+	testing.expect(t, ok, "configured service must resolve")
+	testing.expect_value(t, path, "/tmp/gorch_sup_logs/svc.out.log")
+
+	// No STDERR configured: the operator still wants to read the only file
+	// there is, so stderr falls back to stdout rather than to nothing.
+	fallback, _ := log_path(sv, "t_logs", "stderr")
+	testing.expect_value(t, fallback, "/tmp/gorch_sup_logs/svc.out.log")
+
+	_, unknown := log_path(sv, "nope", "stdout")
+	testing.expect(t, !unknown, "unknown service must not resolve")
+
+	tail, tail_path, err := read_logs(sv, "t_logs", "stdout", 10)
+	defer logfile.tail_destroy(&tail)
+	testing.expectf(t, err == "", "read_logs failed: {}", err)
+	testing.expect_value(t, tail_path, "/tmp/gorch_sup_logs/svc.out.log")
+	testing.expectf(t, len(tail.lines) == 2, "got {} lines", len(tail.lines))
+
+	testing.expect_value(t, clear_logs(sv, "t_logs", "stdout"), "")
+	empty, _, _ := read_logs(sv, "t_logs", "stdout", 10)
+	defer logfile.tail_destroy(&empty)
+	testing.expect_value(t, len(empty.lines), 0)
 }
 
 @(test)
