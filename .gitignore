@@ -14,8 +14,6 @@ logs/
 **/node_modules/
 test-output/
 tmp/
-web/dist/
-web/package-lock.json
 
 AGENTS.md
 CLAUDE.md

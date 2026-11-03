@@ -31,7 +31,7 @@ Three binaries are built from this repo:
 | **gorch-noweb** | Same supervisor built with `-tags noweb` — CLI only, no HTTP server and no embedded SPA |
 | **weblite** | Lightweight static file server — serves a directory with directory listing, zero config |
 
-Both `gorch` and `gorch-noweb` come from the same source (`./cmd/orchard`); `make noweb` builds the latter without touching the frontend.
+`gorch` builds from `src/cmd/gorch` with the Odin compiler (`make one`); the `-tags noweb` variant above is Go-era and has no Odin equivalent yet.
 
 ## Install
 

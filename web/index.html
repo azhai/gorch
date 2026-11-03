@@ -1,13 +1,707 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="monet">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="stylesheet" href="./css/material3.css" />
     <title>Gorch</title>
+    <script type="module" src="./js/main.js"></script>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="./src/main.tsx"></script>
+    <div x-data="gorch()" x-cloak>
+      <!-- ── App shell (every page except login) ─────────────────────────── -->
+      <template x-if="ready && route !== '/login'">
+        <div>
+          <header class="md-app-bar">
+            <div class="md-app-bar__row">
+              <div class="md-row" style="gap:24px">
+                <div class="md-app-bar__brand">
+                  <img :src="asset('logo.svg')" alt="Gorch" />
+                  <h1>Gorch</h1>
+                </div>
+                <nav class="md-nav">
+                  <template x-for="item in navItems.filter((i) => !i.authOnly || showLogout)" :key="item.path">
+                    <a
+                      :href="hrefOf(item.path)"
+                      :class="`md-nav__link${isActive(item.path) ? ' md-nav__link--active' : ''}`"
+                      @click.prevent="go(item.path)"
+                      x-text="t(item.labelKey)"
+                    ></a>
+                  </template>
+                </nav>
+              </div>
+
+              <div class="md-app-bar__tools">
+                <span class="md-connection">
+                  <span
+                    :class="`md-connection__dot ${sseConnected ? 'md-connection__dot--on' : 'md-connection__dot--off'}`"
+                  ></span>
+                  <span x-text="sseConnected ? t('status.connected') : t('status.reconnecting')"></span>
+                </span>
+
+                <template x-if="showLogout">
+                  <button class="md-btn md-btn--sm" @click="logout()" x-text="t('nav.logout')"></button>
+                </template>
+              </div>
+            </div>
+          </header>
+
+          <main class="md-content">
+            <!-- ── Dashboard ──────────────────────────────────────────────── -->
+            <template x-if="route === '/'">
+              <div x-data="dashboardView()">
+                <div class="md-row md-row--between" style="margin-bottom:16px">
+                  <h2 x-text="t('dashboard.services')"></h2>
+                  <div class="md-row md-row--tight">
+                    <div class="md-row md-row--tight">
+                      <span class="md-muted-sm" x-text="t('dashboard.duration')"></span>
+                      <select
+                        id="sse-interval"
+                        class="md-select md-select--sm"
+                        :value="sseInterval"
+                        @change="changeInterval($event.target.value)"
+                      >
+                        <template x-for="opt in sseOptions" :key="opt">
+                          <option :value="opt" x-text="opt"></option>
+                        </template>
+                      </select>
+                    </div>
+                    <div class="md-row md-row--tight">
+                      <span class="md-muted-sm" x-text="t('dashboard.uptime')"></span>
+                      <select id="uptime-mode" class="md-select md-select--sm" x-model="uptimeMode">
+                        <option value="elapsed" x-text="t('dashboard.elapsed')"></option>
+                        <option value="start" x-text="t('dashboard.startTime')"></option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <template x-if="services.length > 0">
+                  <div class="md-card-grid">
+                    <template x-for="svc in services" :key="svc.name">
+                      <div class="md-card md-card--elevated">
+                        <div class="md-service-card__head">
+                          <div class="md-service-card__name">
+                            <span :class="`md-status-dot ${statusClass(svc.status)}`"></span>
+                            <h3 x-text="svc.name"></h3>
+                          </div>
+                          <span class="md-chip" x-text="statusLabel(svc)"></span>
+                        </div>
+
+                        <div class="md-metric-grid">
+                          <div>
+                            <span class="md-metric-label" x-text="t('service.pid')"></span>
+                            <span class="md-metric-value" x-text="svc.pid || '-'"></span>
+                          </div>
+                          <div>
+                            <span class="md-metric-label" x-text="t('service.uptime')"></span>
+                            <span class="md-metric-value" x-text="uptimeFor(svc)"></span>
+                          </div>
+                          <div>
+                            <span class="md-metric-label" x-text="t('service.memory')"></span>
+                            <span class="md-metric-value" x-text="memoryFor(svc)"></span>
+                          </div>
+                        </div>
+
+                        <div class="md-row md-row--tight">
+                          <template x-if="svc.status !== 'running'">
+                            <button
+                              class="md-btn md-btn--tonal md-btn--sm"
+                              :disabled="isPending(svc.name)"
+                              @click="act('start', svc.name)"
+                              x-text="t('service.start')"
+                            ></button>
+                          </template>
+                          <template x-if="svc.status === 'running'">
+                            <button
+                              class="md-btn md-btn--danger md-btn--sm"
+                              :disabled="isPending(svc.name)"
+                              @click="act('stop', svc.name)"
+                            >
+                              <template x-if="isPending(svc.name)"><span class="md-spinner"></span></template>
+                              <span x-text="t('service.stop')"></span>
+                            </button>
+                          </template>
+                          <button
+                            class="md-btn md-btn--outlined md-btn--sm"
+                            :disabled="isPending(svc.name)"
+                            @click="act('restart', svc.name)"
+                          >
+                            <template x-if="isPending(svc.name)"><span class="md-spinner"></span></template>
+                            <span x-text="t('service.restart')"></span>
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <template x-if="services.length === 0">
+                  <div class="md-empty" x-text="t('dashboard.noServices')"></div>
+                </template>
+              </div>
+            </template>
+
+            <!-- ── Logs ───────────────────────────────────────────────────── -->
+            <template x-if="route === '/logs'">
+              <div x-data="logsView()">
+                <div class="md-row" style="margin-bottom:16px">
+                  <h2 x-text="t('logs.title')"></h2>
+                  <select
+                    class="md-select"
+                    aria-label="Select service to view logs"
+                    :value="selected"
+                    @change="pick($event.target.value)"
+                  >
+                    <option value="" x-text="t('logs.selectService')"></option>
+                    <template x-for="s in services" :key="s.name">
+                      <option :value="s.name" x-text="s.name"></option>
+                    </template>
+                  </select>
+
+                  <template x-if="selected">
+                    <div class="md-segmented">
+                      <template x-for="type in logTypes" :key="type">
+                        <button
+                          :class="`md-segmented__item${logType === type ? ' md-segmented__item--selected' : ''}`"
+                          @click="pickType(type)"
+                          x-text="type === 'stdout' ? t('logs.stdout') : t('logs.stderr')"
+                        ></button>
+                      </template>
+                    </div>
+                  </template>
+
+                  <template x-if="selected">
+                    <button
+                      class="md-btn md-btn--danger md-btn--sm"
+                      :disabled="clearing"
+                      @click="clear()"
+                      x-text="clearing ? t('logs.clearing') : t('logs.clear')"
+                    ></button>
+                  </template>
+                </div>
+
+                <template x-if="error">
+                  <div class="md-banner md-banner--error" style="margin-bottom:8px" x-text="error"></div>
+                </template>
+
+                <template x-if="logData && logData.logPath">
+                  <div class="md-muted-sm" style="margin-bottom:8px">
+                    <span x-text="`${t('logs.source')}: ${logData.logPath}`"></span>
+                  </div>
+                </template>
+
+                <div class="md-log-pane">
+                  <template x-if="lines.length === 0">
+                    <p class="md-log-empty" x-text="t('logs.noLogs')"></p>
+                  </template>
+                  <template x-for="(line, idx) in lines" :key="idx">
+                    <div class="md-log-line" x-text="line"></div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <!-- ── Config ─────────────────────────────────────────────────── -->
+            <template x-if="route === '/config'">
+              <div x-data="configView()">
+                <div class="md-row" style="margin-bottom:16px">
+                  <h2 x-text="t('config.title')"></h2>
+                  <select
+                    class="md-select"
+                    aria-label="Select service to configure"
+                    :value="selected"
+                    @change="pickService($event.target.value)"
+                  >
+                    <option value="" x-text="t('config.selectService')"></option>
+                    <template x-for="s in services" :key="s.name">
+                      <option :value="s.name" x-text="s.name"></option>
+                    </template>
+                  </select>
+                  <button
+                    class="md-btn md-btn--tonal md-btn--sm"
+                    aria-label="Create new service"
+                    @click="startCreate()"
+                    x-text="t('config.new')"
+                  ></button>
+                  <template x-if="selected && !isCreating">
+                    <button
+                      class="md-btn md-btn--danger md-btn--sm"
+                      :aria-label="`Delete service ${selected}`"
+                      @click="handleDelete()"
+                      x-text="t('config.delete')"
+                    ></button>
+                  </template>
+                </div>
+
+                <template x-if="!cfg">
+                  <div class="md-card">
+                    <p class="md-muted" x-text="t('config.selectHint')"></p>
+                  </div>
+                </template>
+
+                <template x-if="cfg">
+                  <div class="md-card md-field-group">
+                    <template x-if="isCreating">
+                      <div>
+                        <label class="md-label">
+                          <span x-text="`${t('config.serviceName')} *`"></span>
+                        </label>
+                        <input
+                          class="md-field"
+                          type="text"
+                          x-model="creatingName"
+                          :placeholder="t('config.serviceNamePlaceholder')"
+                        />
+                      </div>
+                    </template>
+
+                    <div>
+                      <label class="md-label">
+                        EXEC_CMD
+                        <span class="md-label__hint" x-text="` (${t('config.command')})`"></span>
+                      </label>
+                      <input class="md-field" type="text" x-model="cfg.EXEC_CMD" />
+                    </div>
+
+                    <div>
+                      <label class="md-label">
+                        RESTART_CMD
+                        <span class="md-label__hint" x-text="` (${t('config.gracefulReload')})`"></span>
+                      </label>
+                      <input
+                        class="md-field"
+                        type="text"
+                        x-model="cfg.RESTART_CMD"
+                        placeholder="e.g. nginx -s reload"
+                      />
+                    </div>
+
+                    <div>
+                      <label class="md-label">
+                        PID_FILE
+                        <span class="md-label__hint" x-text="` (${t('config.pidFile')})`"></span>
+                      </label>
+                      <input
+                        class="md-field"
+                        type="text"
+                        x-model="cfg.PID_FILE"
+                        placeholder="e.g. /var/run/nginx.pid"
+                      />
+                    </div>
+
+                    <div>
+                      <label class="md-label">
+                        PRE_ACTION
+                        <span class="md-label__hint" x-text="` (${t('config.preAction')})`"></span>
+                      </label>
+                      <input
+                        class="md-field"
+                        type="text"
+                        x-model="cfg.PRE_ACTION"
+                        placeholder="e.g. pkill -f myservice"
+                      />
+                    </div>
+
+                    <div>
+                      <label class="md-label">
+                        WORK_DIR
+                        <span class="md-label__hint" x-text="` (${t('config.workingDir')})`"></span>
+                      </label>
+                      <input class="md-field" type="text" x-model="cfg.WORK_DIR" />
+                    </div>
+
+                    <div class="md-grid-3">
+                      <div>
+                        <label class="md-label">
+                          RESTART_POLICY
+                          <span class="md-label__hint" x-text="` (${t('config.restartPolicy')})`"></span>
+                        </label>
+                        <select class="md-field" x-model="cfg.RESTART_POLICY">
+                          <template x-for="opt in restartPolicies" :key="opt.value">
+                            <option :value="opt.value" x-text="opt.label"></option>
+                          </template>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="md-label">
+                          CHECK_PORT
+                          <span class="md-label__hint" x-text="` (0 = ${t('config.off')})`"></span>
+                        </label>
+                        <input
+                          class="md-field"
+                          type="number"
+                          :value="cfg.CHECK_PORT || 0"
+                          placeholder="0"
+                          @input="setNumber('CHECK_PORT', $event.target.value)"
+                        />
+                      </div>
+                      <div>
+                        <label class="md-label">
+                          BACK_OFF
+                          <span class="md-label__hint" x-text="` (${t('config.backOff')})`"></span>
+                        </label>
+                        <input
+                          class="md-field"
+                          type="number"
+                          :value="cfg.BACK_OFF"
+                          @input="setNumber('BACK_OFF', $event.target.value)"
+                        />
+                      </div>
+                    </div>
+
+                    <div class="md-grid-2">
+                      <div>
+                        <label class="md-label">
+                          STDOUT
+                          <span class="md-label__hint" x-text="` (${t('config.logOutput')})`"></span>
+                        </label>
+                        <input class="md-field" type="text" x-model="cfg.STDOUT" />
+                      </div>
+                      <div>
+                        <label class="md-label">
+                          STDERR
+                          <span class="md-label__hint" x-text="` (${t('config.errorOutput')})`"></span>
+                        </label>
+                        <input class="md-field" type="text" x-model="cfg.STDERR" />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label class="md-label">
+                        CRON
+                        <span class="md-label__hint" x-text="` (${t('config.schedule')})`"></span>
+                      </label>
+                      <input
+                        class="md-field"
+                        type="text"
+                        x-model="cfg.CRON"
+                        :placeholder="t('config.cronPlaceholder')"
+                        @input="cronResult = null"
+                      />
+                      <div class="md-row" style="margin-top:8px">
+                        <button
+                          class="md-btn md-btn--tonal md-btn--sm"
+                          :disabled="!cfg.CRON || cronValidating"
+                          @click="handleValidateCron()"
+                          x-text="cronValidating ? t('config.checking') : t('config.validate')"
+                        ></button>
+                      </div>
+                      <template x-if="cronResult">
+                        <div :class="cronBannerClass" style="margin-top:8px" x-text="cronBannerText()"></div>
+                      </template>
+                    </div>
+
+                    <div>
+                      <label class="md-label">
+                        DEPENDS_ON
+                        <span class="md-label__hint" x-text="` (${t('config.dependencies')})`"></span>
+                      </label>
+                      <input
+                        class="md-field"
+                        type="text"
+                        :value="depsText"
+                        :placeholder="t('config.depsPlaceholder')"
+                        @input="setDeps($event.target.value)"
+                      />
+                    </div>
+
+                    <div>
+                      <div class="md-row md-row--between" style="margin-bottom:4px">
+                        <span class="md-label" style="margin:0">
+                          ENV_VARS
+                          <span class="md-label__hint" x-text="`(${t('config.environment')})`"></span>
+                        </span>
+                        <button class="md-btn md-btn--sm" @click="addEnvVar()" x-text="t('config.add')"></button>
+                      </div>
+                      <div class="md-field-group">
+                        <template x-for="entry in envEntries" :key="entry.k">
+                          <div class="md-row md-row--tight">
+                            <input
+                              class="md-field md-field--sm"
+                              style="width:33%"
+                              :value="entry.k"
+                              :placeholder="t('config.key')"
+                              @input="renameEnvVar(entry.k, $event.target.value, entry.v)"
+                            />
+                            <input
+                              class="md-field md-field--sm"
+                              style="flex:1"
+                              :value="entry.v"
+                              :placeholder="t('config.value')"
+                              @input="renameEnvVar(entry.k, entry.k, $event.target.value)"
+                            />
+                            <button
+                              class="md-btn md-btn--danger md-btn--sm"
+                              :aria-label="`Remove environment variable ${entry.k}`"
+                              @click="removeEnvVar(entry.k)"
+                            >
+                              x
+                            </button>
+                          </div>
+                        </template>
+                        <template x-if="envEntries.length === 0">
+                          <p class="md-muted-sm" x-text="t('config.noEnvVars')"></p>
+                        </template>
+                      </div>
+                    </div>
+
+                    <template x-if="message">
+                      <div :class="`md-banner ${bannerClass}`" x-text="message"></div>
+                    </template>
+
+                    <div class="md-row md-row--tight">
+                      <template x-if="isCreating">
+                        <button
+                          class="md-btn md-btn--filled"
+                          :disabled="!canCreate"
+                          @click="handleCreate()"
+                          x-text="saving ? t('config.creating') : t('config.createService')"
+                        ></button>
+                      </template>
+                      <template x-if="!isCreating">
+                        <button
+                          class="md-btn md-btn--filled"
+                          :disabled="saving"
+                          @click="handleSaveAndApply()"
+                          x-text="saving ? t('config.saving') : t('config.saveAndApply')"
+                        ></button>
+                      </template>
+                      <template x-if="isCreating">
+                        <button class="md-btn" @click="cancelCreate()" x-text="t('config.cancel')"></button>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- ── TOTP / Security ────────────────────────────────────────── -->
+            <template x-if="route === '/totp'">
+              <div x-data="totpView()" x-init="start()" style="max-width:672px;margin:0 auto">
+                <h2 style="margin-bottom:24px" x-text="t('totp.title')"></h2>
+
+                <template x-if="error">
+                  <div class="md-banner md-banner--error" style="margin-bottom:16px" x-text="error"></div>
+                </template>
+                <template x-if="success">
+                  <div class="md-banner md-banner--success" style="margin-bottom:16px" x-text="success"></div>
+                </template>
+
+                <template x-if="setupData">
+                  <div class="md-field-group">
+                    <div class="md-card" style="text-align:center">
+                      <h3 style="margin-bottom:16px" x-text="t('totp.scanQr')"></h3>
+                      <img class="md-qr" :src="setupData.qrCode" alt="TOTP QR Code" />
+                      <div class="md-muted-sm" style="margin-top:12px" x-text="t('totp.scanQrHelp')"></div>
+                    </div>
+
+                    <div class="md-card">
+                      <h3 style="margin-bottom:16px" x-text="t('totp.manualEntry')"></h3>
+                      <div class="md-code-box md-mono" x-text="setupData.secret"></div>
+                    </div>
+
+                    <div class="md-card">
+                      <h3 style="margin-bottom:16px" x-text="t('totp.backupCodes')"></h3>
+                      <div class="md-muted-sm" style="margin-bottom:12px" x-text="t('totp.backupSaveHint')"></div>
+                      <div class="md-grid-2">
+                        <template x-for="(code, i) in setupData.backupCodes" :key="i">
+                          <div class="md-code-box md-mono" style="text-align:center" x-text="code"></div>
+                        </template>
+                      </div>
+                    </div>
+
+                    <div class="md-card">
+                      <h3 style="margin-bottom:16px" x-text="t('totp.verifySetup')"></h3>
+                      <div class="md-muted-sm" style="margin-bottom:12px" x-text="t('totp.verifySetupHelp')"></div>
+                      <div class="md-row md-row--tight">
+                        <input
+                          class="md-field md-centered-code"
+                          style="flex:1"
+                          type="text"
+                          maxlength="6"
+                          :value="verifyCode"
+                          placeholder="000000"
+                          @input="setVerifyCode($event.target.value)"
+                        />
+                        <button
+                          class="md-btn md-btn--filled"
+                          :disabled="loading || verifyCode.length !== 6"
+                          @click="handleVerifySetup()"
+                          x-text="t('totp.verifyButton')"
+                        ></button>
+                      </div>
+                    </div>
+
+                    <button class="md-btn" @click="cancelSetup()" x-text="t('totp.cancelSetup')"></button>
+                  </div>
+                </template>
+
+                <template x-if="!setupData">
+                  <div>
+                    <template x-if="loading || !status">
+                      <div class="md-muted-sm" x-text="t('totp.loading')"></div>
+                    </template>
+
+                    <template x-if="!loading && status">
+                      <div class="md-field-group">
+                        <div class="md-card">
+                          <div class="md-row md-row--between">
+                            <div>
+                              <h3 x-text="t('totp.status')"></h3>
+                              <div
+                                class="md-muted-sm"
+                                style="margin-top:4px"
+                                x-text="status.enabled ? t('totp.enabled') : t('totp.notEnabled')"
+                              ></div>
+                            </div>
+                            <span :class="`md-chip ${status.enabled ? 'md-chip--success' : 'md-chip--filled'}`">
+                              <span
+                                x-text="status.enabled ? t('totp.enabledBadge') : t('totp.disabledBadge')"
+                              ></span>
+                            </span>
+                          </div>
+                        </div>
+
+                        <template x-if="status.enabled">
+                          <div class="md-card">
+                            <h3 style="margin-bottom:4px" x-text="t('totp.backupCodes')"></h3>
+                            <div
+                              class="md-muted-sm"
+                              style="margin-bottom:12px"
+                              x-text="t('totp.backupRemaining', { count: status.backupCodes })"
+                            ></div>
+                            <button
+                              class="md-btn md-btn--tonal md-btn--sm"
+                              :disabled="loading"
+                              @click="handleRegenerateBackupCodes()"
+                              x-text="t('totp.regenerate')"
+                            ></button>
+                          </div>
+                        </template>
+
+                        <div class="md-row md-row--tight">
+                          <template x-if="!status.enabled">
+                            <button
+                              class="md-btn md-btn--filled"
+                              :disabled="loading"
+                              @click="handleSetup()"
+                              x-text="t('totp.enable')"
+                            ></button>
+                          </template>
+                          <template x-if="status.enabled">
+                            <button
+                              class="md-btn md-btn--danger"
+                              :disabled="loading"
+                              @click="handleDisable()"
+                              x-text="t('totp.disable')"
+                            ></button>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </main>
+        </div>
+      </template>
+
+      <!-- ── Login ────────────────────────────────────────────────────────── -->
+      <template x-if="ready && route === '/login'">
+        <div x-data="loginView()" class="md-auth-page">
+          <div class="md-auth-card">
+            <h1 x-text="t('login.title')"></h1>
+
+            <div class="md-row md-row--end" style="margin-bottom:16px">
+              <div class="md-row md-row--tight">
+                <span class="md-muted-sm" x-text="t('login.language')"></span>
+                <select
+                  id="login-lang"
+                  class="md-select md-select--sm"
+                  :value="lang"
+                  @change="setLang($event.target.value)"
+                >
+                  <option value="en">English</option>
+                  <option value="zh-CN">简体中文</option>
+                </select>
+              </div>
+            </div>
+
+            <template x-if="error">
+              <div class="md-banner md-banner--error" style="margin-bottom:16px" x-text="error"></div>
+            </template>
+
+            <template x-if="step === 'credentials'">
+              <form class="md-field-group" @submit.prevent="submitCredentials()">
+                <div>
+                  <label class="md-label" x-text="t('login.username')"></label>
+                  <input
+                    class="md-field"
+                    type="text"
+                    x-model="username"
+                    :placeholder="t('login.usernamePlaceholder')"
+                    :disabled="loading"
+                  />
+                </div>
+                <div>
+                  <label class="md-label" x-text="t('login.password')"></label>
+                  <input
+                    class="md-field"
+                    type="password"
+                    x-model="password"
+                    :placeholder="t('login.passwordPlaceholder')"
+                    :disabled="loading"
+                  />
+                </div>
+                <button
+                  class="md-btn md-btn--filled md-btn--block"
+                  type="submit"
+                  :disabled="loading"
+                  x-text="loading ? t('login.signingIn') : t('login.signIn')"
+                ></button>
+              </form>
+            </template>
+
+            <template x-if="step !== 'credentials'">
+              <form class="md-field-group" @submit.prevent="submitTotp()">
+                <p class="md-muted" style="text-align:center;margin:0" x-text="t('login.totpTitle')"></p>
+                <div>
+                  <label class="md-label" x-text="t('login.verificationCode')"></label>
+                  <input
+                    class="md-field md-centered-code"
+                    type="text"
+                    maxlength="6"
+                    :value="totpCode"
+                    :placeholder="t('login.totpPlaceholder')"
+                    :disabled="loading"
+                    @input="onlyDigits('totpCode', $event.target.value)"
+                  />
+                </div>
+                <button
+                  class="md-btn md-btn--filled md-btn--block"
+                  type="submit"
+                  :disabled="loading || totpCode.length !== 6"
+                  x-text="loading ? t('login.verifying') : t('login.verify')"
+                ></button>
+                <button class="md-btn md-btn--block" type="button" @click="back()" x-text="t('login.back')"></button>
+              </form>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- ── App-wide snackbar ────────────────────────────────────────────── -->
+      <template x-if="toast">
+        <div
+          :class="`md-snackbar${toast.type === 'error' ? ' md-snackbar--error' : ''}`"
+          role="status"
+          @click="dismiss()"
+          x-text="toast.message"
+        ></div>
+      </template>
+    </div>
   </body>
 </html>

@@ -31,7 +31,7 @@ gorch 非常适合 Web 应用、API 服务、定时任务、无状态守护进�
 | **gorch-noweb** | 同一个 supervisor，用 `-tags noweb` 构建 — 只有 CLI，不含 HTTP 服务器和嵌入的 SPA |
 | **weblite** | 轻量级静态文件服务器 — 零配置，支持目录列表，直接 serve 一个目录 |
 
-`gorch` 与 `gorch-noweb` 来自同一份源码（`./cmd/orchard`）；`make noweb` 可以在不构建前端的情况下单独产出后者。
+`gorch` 由 Odin 编译器从 `src/cmd/gorch` 构建（`make one`）；上表的 `-tags noweb` 变体属于 Go 时代，Odin 侧还没有对应实现。
 
 ## 安装
 

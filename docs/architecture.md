@@ -30,7 +30,7 @@ Caches service status snapshots for fast queries and SSE updates.
 Unix socket-based inter-process communication. CLI commands talk to the running supervisor through `/tmp/gorch/gorch.sock`.
 
 ### Web Server (`server/`)
-Echo-based HTTP server with an embedded Mithril SPA. Provides REST API and real-time SSE updates.
+Echo-based HTTP server with an embedded Alpine SPA. Provides REST API and real-time SSE updates.
 
 ## Source Layout
 
@@ -40,7 +40,7 @@ Echo-based HTTP server with an embedded Mithril SPA. Provides REST API and real-
 | `cmd/weblite` | Static file server binary |
 | `supervisor/` | Process lifecycle, cron scheduling, status cache, IPC server |
 | `server/` | HTTP layer: REST API, SSE hub, auth, embedded SPA serving |
-| `web/` | Mithril SPA (Material 3 styling); `embed.go` embeds its `dist/` into the binary |
+| `web/` | Alpine SPA (Material 3 Monet theme); served as-is — no bundler, Alpine is vendored in `web/vendor/` |
 | `config/`, `status/`, `ipc/`, `cron/`, `common/` | Supporting packages |
 
 `cmd/orchard` is built twice:
@@ -54,6 +54,6 @@ Echo-based HTTP server with an embedded Mithril SPA. Provides REST API and real-
 - **Cobra** — CLI framework
 - **Echo** — HTTP server
 - **go-toml/v2** — TOML parsing
-- **Mithril 2 + TypeScript + Material 3** — Web UI (CSS design tokens, embedded via embed)
+- **Alpine.js 3 + Material 3 (Monet) + ES modules** — Web UI (CSS design tokens, no build step, embedded via embed)
 - **gobus/log** — Log management
 - **go-totp** — TOTP two-factor authentication
