@@ -33,6 +33,15 @@ Provider :: struct {
 	// from so the UI can show where a service is writing.
 	logs:       proc(user: rawptr, name, kind: string, lines: int) -> (logfile.Tail, string, string),
 	clear_logs: proc(user: rawptr, name, kind: string) -> string,
+	// config_get/set/add/remove/save back the config page. Left nil, the page
+	// still reads and edits `Server.cfg` directly, which is what a build
+	// without a supervisor does.
+	config_get:    proc(user: rawptr, name: string) -> (config.ServiceConfig, bool),
+	config_set:    proc(user: rawptr, name: string, spec: config.ServiceConfig) -> string,
+	add:           proc(user: rawptr, name: string, spec: config.ServiceConfig) -> string,
+	remove:        proc(user: rawptr, name: string) -> string,
+	save:          proc(user: rawptr) -> string,
+	validate_cron: proc(user: rawptr, expression: string) -> (bool, string),
 }
 
 Server :: struct {
@@ -231,14 +240,31 @@ handle_api :: proc(
 		send_json_ok(conn, 200, `{"status":"ok"}`)
 
 	case path == "/api/services":
-		if method != "GET" {
+		switch method {
+		case "GET":
+			send_json_ok(conn, 200, services_json(srv))
+		case "POST":
+			handle_create_service(srv, conn, raw)
+		case:
 			send_json_error(conn, 405, "method not allowed")
-			return
 		}
-		send_json_ok(conn, 200, services_json(srv))
 
 	case strings.has_prefix(path, "/api/services/"):
 		handle_service(srv, conn, method, path, query, raw)
+
+	case path == "/api/save-config":
+		if method != "POST" {
+			send_json_error(conn, 405, "method not allowed")
+			return
+		}
+		handle_save_config(srv, conn)
+
+	case path == "/api/cron/validate":
+		if method != "POST" {
+			send_json_error(conn, 405, "method not allowed")
+			return
+		}
+		handle_cron_validate(srv, conn, raw)
 
 	case path == "/api/events":
 		handle_sse(srv, conn, query)
@@ -379,18 +405,26 @@ handle_service :: proc(
 	}
 
 	if len(action) == 0 {
-		if method != "GET" {
+		switch method {
+		case "GET":
+			ss, ok := service_status(srv, name)
+			if !ok {
+				send_json_error(conn, 404, "service not found")
+				return
+			}
+			b := strings.builder_make()
+			write_service_json(&b, ss)
+			send_json_ok(conn, 200, strings.to_string(b))
+		case "DELETE":
+			handle_delete_service(srv, conn, name)
+		case:
 			send_json_error(conn, 405, "method not allowed")
-			return
 		}
-		ss, ok := service_status(srv, name)
-		if !ok {
-			send_json_error(conn, 404, "service not found")
-			return
-		}
-		b := strings.builder_make()
-		write_service_json(&b, ss)
-		send_json_ok(conn, 200, strings.to_string(b))
+		return
+	}
+
+	if action == "config" {
+		handle_service_config(srv, conn, method, name, raw)
 		return
 	}
 

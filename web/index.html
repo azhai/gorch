@@ -237,6 +237,12 @@
                   </div>
                 </div>
 
+                <!-- The banner sits outside the form so the outcome of a create or a
+                     delete — both of which clear `cfg` — is still visible. -->
+                <template x-if="message">
+                  <div :class="`md-banner ${bannerClass}`" role="status" x-text="message"></div>
+                </template>
+
                 <template x-if="!cfg">
                   <div class="md-card">
                     <p class="md-muted" x-text="t('config.selectHint')"></p>
@@ -582,10 +588,6 @@
                           </template>
                         </div>
                       </section>
-                    </template>
-
-                    <template x-if="message">
-                      <div :class="`md-banner ${bannerClass}`" role="status" x-text="message"></div>
                     </template>
 
                     <div class="md-form-actions">

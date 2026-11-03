@@ -2,11 +2,13 @@ package supervisor
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
 
 import "../../lib/config"
+import "../../lib/cron"
 import glog "../../lib/log"
 import "../../lib/logfile"
 import "../../lib/state"
@@ -65,6 +67,12 @@ Service :: struct {
 	restarting:   bool, // an operator restart is pending on the current exit
 	saved:        state.Record, // last record written, to skip redundant flushes
 	has_saved:    bool,
+	// A scheduled (CRON) service has no resident pid; these describe the run
+	// that is in flight, if any.
+	cron_pid:     int,
+	cron_started: i64,
+	// A service the operator deleted keeps a row until its child is reaped.
+	removing:     bool,
 }
 
 Supervisor :: struct {
@@ -81,6 +89,10 @@ Supervisor :: struct {
 	halt:         bool,
 	rotator:      logfile.Rotator,
 	last_rotate:  i64, // unix seconds of the last log rotation pass
+	cron_sched:   ^cron.Scheduler,
+	cron_procs:   map[string]os.Process, // one-shot runs in flight, by service
+	removing:     [dynamic]string, // services deleted from the config, awaiting a reap
+	cron_bindings: [dynamic]^Cron_Binding,
 }
 
 now_seconds :: proc(sv: ^Supervisor) -> i64 {
@@ -99,6 +111,9 @@ init :: proc(sv: ^Supervisor, cfg: ^config.Config, state_path: string) -> string
 	sv.default_back_off = BACKOFF
 	sv.services = make(map[string]^Service)
 	logfile.rotator_init(&sv.rotator)
+	sv.cron_sched = cron.new_scheduler()
+	sv.cron_procs = make(map[string]os.Process)
+	sv.removing = make([dynamic]string)
 
 	names := config.sorted_service_names(cfg)
 	defer delete(names)
@@ -109,12 +124,16 @@ init :: proc(sv: ^Supervisor, cfg: ^config.Config, state_path: string) -> string
 			continue
 		}
 		s := new(Service)
-		s.name = name
+		// The name is cloned, not borrowed, so that every Service owns its key
+		// the same way. A borrowed name would make a delete free a slice that
+		// belongs to the config map - the allocator rejects that outright.
+		s.name = strings.clone(name)
 		s.spec = spec
 		s.status = .Stopped
 		s.exits = make([dynamic]i64)
-		sv.services[name] = s
-		append(&sv.order, name)
+		sv.services[s.name] = s
+		append(&sv.order, s.name)
+		register_cron(sv, s)
 	}
 
 	if len(state_path) > 0 {
@@ -186,6 +205,11 @@ start_all :: proc(sv: ^Supervisor) {
 	defer sync.rw_mutex_unlock(&sv.mu)
 	for name in sv.order {
 		s := sv.services[name]
+		if is_scheduled(s) {
+			// A CRON service is fired by the scheduler, not started here.
+			s.status = .Stopped
+			continue
+		}
 		if s.pid > 0 {
 			continue
 		}
@@ -212,6 +236,9 @@ stop_all :: proc(sv: ^Supervisor) {
 			signal(s.pid, .SIGTERM)
 			s.kill_at = now + STOP_GRACE
 		}
+		if s.cron_pid > 0 {
+			signal(s.cron_pid, .SIGTERM)
+		}
 	}
 }
 
@@ -222,6 +249,16 @@ start :: proc(sv: ^Supervisor, name: string) -> string {
 	s, ok := sv.services[name]
 	if !ok {
 		return fmt.tprintf("unknown service: {}", name)
+	}
+	if is_scheduled(s) {
+		// "start" on a scheduled service means "run it now"; the timer keeps
+		// its own cadence either way.
+		result, pid := cron_start_locked(sv, s, now_seconds(sv))
+		if len(result) > 0 {
+			return fmt.tprintf("cannot start {}: {}", name, result)
+		}
+		record_run(sv, name, "started", now_seconds(sv), 0, pid, false)
+		return ""
 	}
 	if s.pid > 0 {
 		return ""
@@ -249,6 +286,13 @@ stop :: proc(sv: ^Supervisor, name: string) -> string {
 	}
 	s.want_running = false
 	s.restarting = false
+	if is_scheduled(s) {
+		// Stop the run that is in flight; the next scheduled fire picks up.
+		if s.cron_pid > 0 {
+			signal(s.cron_pid, .SIGTERM)
+		}
+		return ""
+	}
 	if s.pid > 0 {
 		signal(s.pid, .SIGTERM)
 		s.kill_at = now_seconds(sv) + STOP_GRACE
@@ -267,6 +311,15 @@ restart :: proc(sv: ^Supervisor, name: string) -> string {
 	if !ok {
 		sync.rw_mutex_unlock(&sv.mu)
 		return fmt.tprintf("unknown service: {}", name)
+	}
+	if is_scheduled(s) {
+		// A scheduled service has no resident process to restart: end the run
+		// that is in flight and let the schedule decide when the next one is.
+		if s.cron_pid > 0 {
+			signal(s.cron_pid, .SIGTERM)
+		}
+		sync.rw_mutex_unlock(&sv.mu)
+		return ""
 	}
 	if s.spec.restart_cmd != "" && s.pid > 0 {
 		cmd := s.spec.restart_cmd
@@ -303,6 +356,15 @@ snapshot :: proc(sv: ^Supervisor) -> []status.ServiceStatus {
 			pid        = s.pid,
 			started_at = s.started_at,
 		}
+		// A scheduled run in flight is what the dashboard should see, even
+		// though the service itself has no resident pid.
+		if s.cron_pid > 0 {
+			ss.status = .Running
+			ss.pid = s.cron_pid
+			if s.cron_started > 0 {
+				ss.started_at = s.cron_started
+			}
+		}
 		if s.exit_code != 0 || s.status == .Crashed || s.status == .Failed {
 			code := s.exit_code
 			ss.exit_code = &code
@@ -320,7 +382,8 @@ tick :: proc(sv: ^Supervisor) -> bool {
 	sync.rw_mutex_lock(&sv.mu)
 	defer sync.rw_mutex_unlock(&sv.mu)
 	now := now_seconds(sv)
-	changed := false
+	changed := reap_cron_locked(sv, now)
+	reap_removed_locked(sv, now)
 	for name in sv.order {
 		s := sv.services[name]
 		if poll_locked(sv, s, now) {
@@ -333,7 +396,8 @@ tick :: proc(sv: ^Supervisor) -> bool {
 	return changed
 }
 
-@(private = "file")
+// poll_locked reaps an exit and applies the SIGKILL deadline. Not file-private:
+// the delete path in service_admin reaps a service being removed through it.
 poll_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> bool {
 	changed := false
 	if s.pid > 0 {
@@ -580,6 +644,9 @@ shutdown :: proc(sv: ^Supervisor) {
 	_ = flush(sv)
 	state.close(&sv.store)
 	sv.has_store = false
+	if sv.cron_sched != nil {
+		cron.stop(sv.cron_sched)
+	}
 }
 
 // destroy frees everything init allocated. shutdown only stops processes, so a
@@ -592,11 +659,22 @@ destroy :: proc(sv: ^Supervisor) {
 	}
 	for _, s in sv.services {
 		delete(s.exits)
+		delete(s.name)
 		free(s)
 	}
 	delete(sv.services)
 	delete(sv.order)
+	delete(sv.removing)
 	logfile.rotator_destroy(&sv.rotator)
+	if sv.cron_sched != nil {
+		cron.destroy_scheduler(sv.cron_sched)
+		sv.cron_sched = nil
+	}
+	delete(sv.cron_procs)
+	for b in sv.cron_bindings {
+		free(b)
+	}
+	delete(sv.cron_bindings)
 	sv.services = nil
 	sv.order = nil
 	sv.cfg = nil
@@ -688,10 +766,12 @@ Loop :: struct {
 	halted: u32,
 }
 
-// spawn_loop starts the tick loop on its own thread.
+// spawn_loop starts the tick loop on its own thread, along with the cron
+// scheduler that fires the scheduled services.
 spawn_loop :: proc(sv: ^Supervisor) -> ^Loop {
 	l := new(Loop)
 	l.sv = sv
+	cron.start(sv.cron_sched)
 	thread.create_and_start_with_poly_data(l, loop_run, context, .Normal, true)
 	return l
 }

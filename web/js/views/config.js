@@ -258,7 +258,23 @@ export function configView() {
         this.open = {}
         return
       }
-      const cfg = await fetchServiceConfig(name)
+      let cfg
+      try {
+        cfg = await fetchServiceConfig(name)
+      } catch (err) {
+        // Leaving `selected` set would swallow the retry: re-picking the same
+        // option fires no change event, so the form could never come back.
+        this.cfg = null
+        this.originalCfg = null
+        this.envRows = []
+        this.open = {}
+        this.selected = ''
+        this.showMsg(
+          i18n.t('config.loadFailed', { name, message: err instanceof Error ? err.message : err }),
+          'error'
+        )
+        return
+      }
       cfg.DEPENDS_ON = cfg.DEPENDS_ON || []
       cfg.ENV_VARS = cfg.ENV_VARS || {}
       for (const key of NUMBER_KEYS) cfg[key] = cfg[key] || 0

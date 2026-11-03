@@ -1,6 +1,7 @@
 package supervisor
 
 import "core:os"
+import "core:strings"
 import "core:testing"
 import "core:time"
 
@@ -187,6 +188,109 @@ test_log_path_and_tail :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_cron_service_runs_on_schedule_not_at_boot :: proc(t: ^testing.T) {
+	dir := "/tmp/gorch_sup_cron"
+	_ = os.make_directory(dir)
+	out := "/tmp/gorch_sup_cron/run.log"
+	_ = os.remove(out)
+	defer _ = os.remove_all(dir)
+
+	cfg := new(config.Config)
+	defer free_test_config(cfg)
+	cfg.services = make(map[string]config.ServiceConfig)
+	cfg.services["t_job"] = config.ServiceConfig {
+		exec_cmd = "echo ran >> /tmp/gorch_sup_cron/run.log",
+		work_dir = "/tmp",
+		cron     = "@every 1h",
+	}
+
+	sv := new(Supervisor)
+	defer free(sv)
+	init(sv, cfg, "")
+	defer {
+		shutdown(sv)
+		destroy(sv)
+	}
+
+	testing.expect(t, cron_next(sv, "t_job") > 0, "the job must be registered")
+
+	// A scheduled service is not a daemon: booting must not run it.
+	start_all(sv)
+	s := sv.services["t_job"]
+	testing.expect_value(t, s.pid, 0)
+	testing.expect_value(t, s.status, status.Status.Stopped)
+	testing.expect(t, !os.exists(out), "boot must not run a scheduled service")
+
+	// "start" means "run it now" for these.
+	testing.expect_value(t, start(sv, "t_job"), "")
+	for _ in 0 ..< 100 {
+		_ = tick(sv)
+		if !os.exists(out) {
+			time.sleep(20 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	testing.expect(t, os.exists(out), "the run must write its output")
+	testing.expect_value(t, s.cron_pid, 0) // reaped by tick
+
+	h := cron_history(sv, "t_job")
+	defer delete(h)
+	testing.expectf(t, len(h) >= 1, "history has {} records", len(h))
+	if len(h) > 0 {
+		testing.expect_value(t, h[0].status, "started")
+	}
+}
+
+@(test)
+test_cron_overlap_is_skipped :: proc(t: ^testing.T) {
+	cfg := new(config.Config)
+	defer free_test_config(cfg)
+	cfg.services = make(map[string]config.ServiceConfig)
+	cfg.services["t_slow"] = config.ServiceConfig {
+		exec_cmd = "sleep 5",
+		work_dir = "/tmp",
+		cron     = "@every 1h",
+	}
+
+	sv := new(Supervisor)
+	defer free(sv)
+	init(sv, cfg, "")
+	defer {
+		shutdown(sv)
+		destroy(sv)
+	}
+
+	testing.expect_value(t, start(sv, "t_slow"), "")
+	s := sv.services["t_slow"]
+	testing.expect(t, s.cron_pid > 0, "first run must be in flight")
+
+	// A second trigger while the first run is still going is refused instead of
+	// stacking another copy of the job on top of it.
+	err := start(sv, "t_slow")
+	testing.expect(t, len(err) > 0, "overlapping run must be refused")
+	testing.expect(t, len(err) > 0 && strings.contains(err, "overlap"))
+
+	stop(sv, "t_slow")
+	for _ in 0 ..< 50 {
+		if tick(sv) {
+			break
+		}
+		time.sleep(20 * time.Millisecond)
+	}
+	testing.expect_value(t, s.cron_pid, 0)
+}
+
+@(test)
+test_cron_validate :: proc(t: ^testing.T) {
+	ok, msg := cron_validate("0 */5 * * * *")
+	testing.expect(t, ok, msg)
+	bad, why := cron_validate("not a cron")
+	testing.expect(t, !bad)
+	testing.expect(t, len(why) > 0)
+}
+
+@(test)
 test_recover_adopts_running_child :: proc(t: ^testing.T) {
 	path := "/tmp/gorch_sup_recover.state"
 
@@ -231,4 +335,51 @@ test_recover_adopts_running_child :: proc(t: ^testing.T) {
 	destroy(second)
 	free(first)
 	free(second)
+}
+
+@(test)
+test_add_and_remove_service :: proc(t: ^testing.T) {
+	cfg := new(config.Config)
+	cfg.services = make(map[string]config.ServiceConfig)
+	cfg.services["keep"] = config.ServiceConfig {
+		exec_cmd       = "sleep 60",
+		work_dir       = "/tmp",
+		restart_policy = "never",
+	}
+
+	sv := new(Supervisor)
+	init(sv, cfg, "")
+	defer {
+		shutdown(sv)
+		destroy(sv)
+		free(sv)
+		delete(cfg.services)
+		free(cfg)
+	}
+
+	spec := config.ServiceConfig {
+		exec_cmd       = "sleep 60",
+		work_dir       = "/tmp",
+		restart_policy = "never",
+	}
+	err := add_service(sv, "added", spec)
+	testing.expectf(t, err == "", "add_service: {}", err)
+	testing.expect(t, len(sv.services) == 2, "service table grew")
+	testing.expect(t, sv.services["added"] != nil, "lookup after add")
+	for _ in 0 ..< 3 {
+		_ = tick(sv)
+	}
+
+	edited := spec
+	edited.back_off = 7
+	edited.depends_on = []string{"keep"}
+	testing.expectf(t, set_spec(sv, "added", edited) == "", "set_spec")
+	testing.expect(t, sv.services["added"].spec.back_off == 7, "spec replaced")
+
+	testing.expectf(t, remove_service(sv, "added") == "", "remove_service")
+	for _ in 0 ..< 10 {
+		_ = tick(sv)
+	}
+	_, still := sv.services["added"]
+	testing.expect(t, !still, "removed service leaves the table")
 }

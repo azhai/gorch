@@ -345,6 +345,7 @@ topological_sort :: proc(cfg: ^Config) -> ([]string, string) {
 		return nil, e
 	}
 	state := make(map[string]int) // 0=unvisited,1=visiting,2=visited
+	defer delete(state)
 	order := [dynamic]string{}
 
 	names := sorted_service_names(cfg)

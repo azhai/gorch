@@ -31,6 +31,27 @@ function isObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Not every failure comes back as JSON (a proxy 502, a dead socket), and a
+ *  parse error here would hide the real status from the caller. */
+async function readJson(res) {
+  try {
+    return await res.json()
+  } catch {
+    return {}
+  }
+}
+
+/** Normalises a mutation reply: `success` falls back to the HTTP status so a
+ *  non-JSON error page still reports as a failure. */
+async function readResult(res) {
+  const json = await readJson(res)
+  return {
+    ...json,
+    success: json.success === undefined ? res.ok : json.success,
+    message: json.message || (res.ok ? '' : `HTTP ${res.status}`),
+  }
+}
+
 /** The server answers /services with either a list or a name-keyed map. */
 function normalizeServiceData(data) {
   if (Array.isArray(data)) return data
@@ -50,13 +71,13 @@ function normalizeServiceData(data) {
 
 export async function fetchServices() {
   const res = await authFetch(`${API_BASE}/services`)
-  const json = await res.json()
+  const json = await readJson(res)
   return normalizeServiceData(json.data)
 }
 
 export async function fetchService(name) {
   const res = await authFetch(`${API_BASE}/services/${name}`)
-  const json = await res.json()
+  const json = await readJson(res)
   return json.data
 }
 
@@ -74,7 +95,7 @@ export async function restartService(name) {
 
 export async function fetchLogs(name, lines = 500, type = 'stdout') {
   const res = await authFetch(`${API_BASE}/services/${name}/logs?lines=${lines}&type=${type}`)
-  const json = await res.json()
+  const json = await readJson(res)
   const data = json.data || { lines: [], logPath: '' }
   return { ...data, lines: data.lines || [] }
 }
@@ -85,7 +106,12 @@ export async function clearLogs(name, type = 'stdout') {
 
 export async function fetchServiceConfig(name) {
   const res = await authFetch(`${API_BASE}/services/${name}/config`)
-  const json = await res.json()
+  const json = await readJson(res)
+  // Returning `undefined` here used to make the form throw on the next line and
+  // leave the page blank; raising instead lets the view show what went wrong.
+  if (!res.ok || json.success === false || !json.data) {
+    throw new Error(json.message || `HTTP ${res.status}`)
+  }
   return json.data
 }
 
@@ -95,12 +121,12 @@ export async function updateServiceConfig(name, config) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   })
-  return res.json()
+  return readResult(res)
 }
 
 export async function saveConfigToFile() {
   const res = await authFetch(`${API_BASE}/save-config`, { method: 'POST' })
-  return res.json()
+  return readResult(res)
 }
 
 export async function createService(name, config) {
@@ -109,12 +135,12 @@ export async function createService(name, config) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, svc: config }),
   })
-  return res.json()
+  return readResult(res)
 }
 
 export async function deleteService(name) {
   const res = await authFetch(`${API_BASE}/services/${name}`, { method: 'DELETE' })
-  return res.json()
+  return readResult(res)
 }
 
 export async function validateCronExpression(expression) {
@@ -123,8 +149,11 @@ export async function validateCronExpression(expression) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ expression }),
   })
-  const json = await res.json()
-  return json.data || { valid: false, message: 'no response' }
+  const json = await readJson(res)
+  if (!res.ok || !json.data) {
+    throw new Error(json.message || `HTTP ${res.status}`)
+  }
+  return json.data
 }
 
 export async function fetchCronHistory(name) {

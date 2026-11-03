@@ -114,6 +114,12 @@ main :: proc() {
 			action     = provider_action,
 			logs       = provider_logs,
 			clear_logs = provider_clear_logs,
+			config_get    = provider_config_get,
+			config_set    = provider_config_set,
+			add           = provider_add,
+			remove        = provider_remove,
+			save          = provider_save,
+			validate_cron = provider_validate_cron,
 		}
 		// The provider outgrew the inline poly-data slot, so the arguments live
 		// on the heap for the lifetime of the process - like the server itself.
@@ -181,6 +187,36 @@ provider_logs :: proc(
 provider_clear_logs :: proc(user: rawptr, name, kind: string) -> string {
 	sup := cast(^supervisor.Supervisor)user
 	return supervisor.clear_logs(sup, name, kind)
+}
+
+provider_config_get :: proc(user: rawptr, name: string) -> (cfg.ServiceConfig, bool) {
+	sup := cast(^supervisor.Supervisor)user
+	return supervisor.spec_of(sup, name)
+}
+
+provider_config_set :: proc(user: rawptr, name: string, spec: cfg.ServiceConfig) -> string {
+	sup := cast(^supervisor.Supervisor)user
+	return supervisor.set_spec(sup, name, spec)
+}
+
+provider_add :: proc(user: rawptr, name: string, spec: cfg.ServiceConfig) -> string {
+	sup := cast(^supervisor.Supervisor)user
+	return supervisor.add_service(sup, name, spec)
+}
+
+provider_remove :: proc(user: rawptr, name: string) -> string {
+	sup := cast(^supervisor.Supervisor)user
+	return supervisor.remove_service(sup, name)
+}
+
+provider_save :: proc(user: rawptr) -> string {
+	sup := cast(^supervisor.Supervisor)user
+	return supervisor.save_config_file(sup)
+}
+
+provider_validate_cron :: proc(user: rawptr, expression: string) -> (bool, string) {
+	_ = user
+	return supervisor.cron_validate(expression)
 }
 
 Serve_Args :: struct {

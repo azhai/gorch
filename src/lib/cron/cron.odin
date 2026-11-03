@@ -799,5 +799,11 @@ destroy_scheduler :: proc(s: ^Scheduler) {
 	}
 	delete(s.jobs)
 	delete(s.running)
+	// new_scheduler allocates the Scheduler itself on the global heap so worker
+	// threads can share it; freeing it with the caller's allocator is what the
+	// tracking allocator reports as a bad free.
+	prev := context.allocator
+	context.allocator = runtime.default_allocator()
 	free(s)
+	context.allocator = prev
 }
