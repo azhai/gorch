@@ -31,7 +31,7 @@ TOTP_DB = "auth_totp.db"
 |------|------|
 | `TOTP_ENABLE` | 设为 `true` 启用 TOTP |
 | `TOTP_SECRET` | 32 字节十六进制主密钥（64 个字符） |
-| `TOTP_DB` | 存储 TOTP 绑定信息的 SQLite 数据库路径 |
+| `TOTP_DB` | 存储 TOTP 绑定信息的 JSON 文件路径 |
 
 ### 3. 重启 gorch
 
@@ -55,11 +55,11 @@ sudo launchctl kickstart -k system/com.github.azhai.gorch
 1. 使用用户名和密码登录
 2. 进入 **TOTP 设置** 页面
 3. 点击 **设置 TOTP**
-4. 用你的身份验证器 App 扫描二维码（见下方[推荐 APP](#推荐的身份验证器-app)）
+4. 把账号加入身份验证器 App：当前版本显示的是 `otpauth://` 设置链接和密钥，而不是二维码图片，可以在运行 App 的设备上直接打开链接，或手动输入密钥（见下方[推荐 APP](#推荐的身份验证器-app)）
 5. 输入 App 中显示的 6 位验证码进行确认
 6. 将备用码保存到安全的地方
 
-从现在开始，每次登录都需要输入密码和 TOTP 验证码。
+从现在开始，每次登录都需要输入密码和 TOTP 验证码。连续 5 次验证码错误会锁定账号 15 分钟。
 
 ## 推荐的身份验证器 APP
 

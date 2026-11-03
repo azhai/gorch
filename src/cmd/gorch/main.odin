@@ -2,10 +2,10 @@ package main
 
 // gorch entry point (Odin rewrite).
 //
-// What runs today: config loading, the runtime directory, a supervisor that forks
-// the configured processes and applies restart policy, and a web server that serves
-// the SPA plus the service API. Still only in the Go implementation on the `main`
-// branch: log rotation/streaming, cron execution, IPC and TOTP.
+// Config loading, the runtime directory, a supervisor that forks the configured
+// processes and applies restart policy, cron execution, and a web server that
+// serves the SPA plus the whole API. Still only in the Go implementation on the
+// `main` branch: log IPC.
 
 import "core:fmt"
 import "core:os"
@@ -21,6 +21,7 @@ import "../../lib/logfile"
 import paths "../../lib/paths"
 import status "../../lib/status"
 import supervisor "../../lib/supervisor"
+import "../../lib/totp"
 import web "../../lib/web"
 
 USAGE :: `gorch - process supervisor
@@ -120,6 +121,11 @@ main :: proc() {
 			remove        = provider_remove,
 			save          = provider_save,
 			validate_cron = provider_validate_cron,
+			cron_history  = provider_cron_history,
+		}
+		if store := open_totp(&config); store != nil {
+			provider.totp = store
+			glog.info("TOTP enabled", "db", config.web.totp_db)
 		}
 		// The provider outgrew the inline poly-data slot, so the arguments live
 		// on the heap for the lifetime of the process - like the server itself.
@@ -214,9 +220,65 @@ provider_save :: proc(user: rawptr) -> string {
 	return supervisor.save_config_file(sup)
 }
 
-provider_validate_cron :: proc(user: rawptr, expression: string) -> (bool, string) {
+provider_validate_cron :: proc(user: rawptr, expression: string) -> web.Cron_Check {
 	_ = user
-	return supervisor.cron_validate(expression)
+	check := supervisor.cron_validate(expression)
+	return web.Cron_Check{valid = check.valid, message = check.message, next = check.next}
+}
+// provider_cron_history flattens the scheduler's records for the config page.
+// The slice is built on the request arena: the handler writes it out and the
+// response frees everything with the connection.
+provider_cron_history :: proc(user: rawptr, name: string) -> []web.Cron_Run {
+	sup := cast(^supervisor.Supervisor)user
+	records := supervisor.cron_history(sup, name)
+	out := make([]web.Cron_Run, len(records))
+	for rec, i in records {
+		out[i] = web.Cron_Run {
+			started_at = rec.started_at,
+			status     = rec.status,
+			pid        = rec.pid,
+		}
+		if rec.ended_at != nil {
+			out[i].has_ended = true
+			out[i].ended_at = rec.ended_at^
+		}
+		if rec.exit_code != nil {
+			out[i].has_exit = true
+			out[i].exit_code = rec.exit_code^
+		}
+	}
+	return out
+}
+
+// open_totp builds the second-factor store when the config asks for one. A
+// missing or malformed master key is reported and tolerated: losing the
+// dashboard over it would be worse than running without a second factor, and
+// the UI says so instead of failing the login.
+open_totp :: proc(config: ^cfg.Config) -> ^totp.TOTP {
+	if !config.web.totp_enable {
+		return nil
+	}
+	if len(config.web.totp_secret) == 0 {
+		glog.error("TOTP_ENABLE is set but TOTP_SECRET is empty; second factor stays off")
+		return nil
+	}
+	db_path := config.web.totp_db
+	if len(db_path) == 0 {
+		db_path = "auth_totp.db"
+		config.web.totp_db = db_path
+	}
+	store, err := totp.new_totp(config.web.totp_secret, "gorch", db_path)
+	if err != .None {
+		glog.error(
+			"cannot initialise TOTP; second factor stays off",
+			"err",
+			err,
+			"hint",
+			"TOTP_SECRET must be 32 hex characters (openssl rand -hex 32)",
+		)
+		return nil
+	}
+	return store
 }
 
 Serve_Args :: struct {

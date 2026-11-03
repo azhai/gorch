@@ -707,6 +707,12 @@ a {
   border-color: transparent;
 }
 
+.md-chip--error {
+  background: color-mix(in srgb, var(--md-error) 14%, var(--md-surface));
+  color: var(--md-error);
+  border-color: transparent;
+}
+
 /* Service names are data, not labels: keep their spelling. */
 .md-chip--plain {
   height: 28px;

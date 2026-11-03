@@ -14,6 +14,7 @@ import "core:net"
 import "core:strings"
 
 import "../../lib/config"
+import "../../lib/cron"
 
 Config_Body :: struct {
 	WORK_DIR:       string            `json:"WORK_DIR"`,
@@ -198,14 +199,65 @@ handle_cron_validate :: proc(srv: ^Server, conn: net.TCP_Socket, raw: string) {
 		send_json_error(conn, 503, "supervisor is not running")
 		return
 	}
-	valid, msg := srv.provider.validate_cron(srv.provider.user, body.expression)
+	check := srv.provider.validate_cron(srv.provider.user, body.expression)
+	defer delete(check.next)
 	b := strings.builder_make()
-	fmt.sbprintf(&b, `{{"valid":{}`, valid)
-	if !valid {
+	fmt.sbprintf(&b, `{{"valid":{}`, check.valid)
+	if !check.valid {
 		strings.write_string(&b, `,"message":`)
-		write_json_string(&b, msg)
+		write_json_string(&b, check.message)
+	} else {
+		if len(check.next) > 0 {
+			strings.write_string(&b, `,"nextRun":`)
+			write_json_string(&b, cron.format_time(check.next[0]))
+		}
+		if len(check.next) > 1 {
+			strings.write_string(&b, `,"nextRun2":`)
+			write_json_string(&b, cron.format_time(check.next[1]))
+		}
 	}
 	strings.write_byte(&b, '}')
+	send_json_ok(conn, 200, strings.to_string(b))
+}
+
+// handle_cron_history answers the "recent runs" list of a scheduled service.
+// The entries come from the scheduler rather than from the config, so a service
+// that has never fired answers with an empty list: "no runs yet" is the truth,
+// not an error.
+handle_cron_history :: proc(srv: ^Server, conn: net.TCP_Socket, name: string) {
+	if len(name) == 0 {
+		send_json_error(conn, 404, "not found")
+		return
+	}
+	if _, ok := current_spec(srv, name); !ok {
+		send_json_error(conn, 404, "service not found")
+		return
+	}
+	runs: []Cron_Run
+	if srv.provider.cron_history != nil {
+		runs = srv.provider.cron_history(srv.provider.user, name)
+	}
+
+	// Oldest first, as recorded. The panel reverses it for display so the
+	// newest run is on top.
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for r, i in runs {
+		if i > 0 {
+			strings.write_byte(&b, ',')
+		}
+		fmt.sbprintf(&b, `{{"startedAt":{}`, r.started_at)
+		if r.has_ended {
+			fmt.sbprintf(&b, `,"endedAt":{}`, r.ended_at)
+		}
+		if r.has_exit {
+			fmt.sbprintf(&b, `,"exitCode":{}`, r.exit_code)
+		}
+		fmt.sbprintf(&b, `,"pid":{},"status":`, r.pid)
+		write_json_string(&b, r.status)
+		strings.write_byte(&b, '}')
+	}
+	strings.write_byte(&b, ']')
 	send_json_ok(conn, 200, strings.to_string(b))
 }
 

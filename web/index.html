@@ -422,6 +422,43 @@
                                 />
                                 <p class="md-field__desc" x-text="t('config.cronTimeoutHint')"></p>
                               </div>
+
+                              <!-- Runs are history, not config: they come from the
+                                   scheduler, so they only exist for a saved service. -->
+                              <div x-show="cfg.CRON && !isCreating" style="margin-top:24px">
+                                <div class="md-row md-row--between" style="margin-bottom:8px">
+                                  <span class="md-label" x-text="t('config.cronRuns')"></span>
+                                  <button
+                                    type="button"
+                                    class="md-btn md-btn--tonal md-btn--sm"
+                                    :disabled="cronRunsLoading"
+                                    @click="loadCronRuns()"
+                                    x-text="cronRunsLoading ? t('config.checking') : t('config.cronRunsRefresh')"
+                                  ></button>
+                                </div>
+                                <template x-if="!cronRuns.length">
+                                  <p class="md-muted-sm" x-text="t('config.cronRunsEmpty')"></p>
+                                </template>
+                                <template x-if="cronRuns.length">
+                                  <div>
+                                    <template x-for="run in cronRuns" :key="`${run.startedAt}-${run.pid}`">
+                                      <div
+                                        class="md-row md-row--between"
+                                        style="padding:6px 0;border-bottom:1px solid var(--md-outline-variant)"
+                                      >
+                                        <div class="md-row md-row--tight">
+                                          <span
+                                            :class="`md-chip ${runChipClass(run)}`"
+                                            x-text="runStatus(run)"
+                                          ></span>
+                                          <span class="md-mono md-muted-sm" x-text="runTime(run)"></span>
+                                        </div>
+                                        <span class="md-muted-sm" x-text="runDetail(run)"></span>
+                                      </div>
+                                    </template>
+                                  </div>
+                                </template>
+                              </div>
                             </div>
                           </template>
 
@@ -646,13 +683,32 @@
                   <div class="md-field-group">
                     <div class="md-card" style="text-align:center">
                       <h3 style="margin-bottom:16px" x-text="t('totp.scanQr')"></h3>
-                      <img class="md-qr" :src="setupData.qrCode" alt="TOTP QR Code" />
-                      <div class="md-muted-sm" style="margin-top:12px" x-text="t('totp.scanQrHelp')"></div>
+                      <!-- The server sends no QR image yet, only the otpauth
+                           URI, so the card degrades to a link instead of a
+                           broken <img>. -->
+                      <template x-if="setupData.qrCode">
+                        <img class="md-qr" :src="setupData.qrCode" alt="TOTP QR Code" />
+                      </template>
+                      <div
+                        class="md-muted-sm"
+                        style="margin-top:12px"
+                        x-text="setupData.qrCode ? t('totp.scanQrHelp') : t('totp.noQrHint')"
+                      ></div>
                     </div>
 
                     <div class="md-card">
                       <h3 style="margin-bottom:16px" x-text="t('totp.manualEntry')"></h3>
                       <div class="md-code-box md-mono" x-text="setupData.secret"></div>
+                      <template x-if="setupData.otpauthUri">
+                        <div style="margin-top:12px">
+                          <div class="md-label" x-text="t('totp.setupUri')"></div>
+                          <div
+                            class="md-code-box md-mono"
+                            style="word-break:break-all;text-align:left"
+                            x-text="setupData.otpauthUri"
+                          ></div>
+                        </div>
+                      </template>
                     </div>
 
                     <div class="md-card">
@@ -706,7 +762,9 @@
                               <div
                                 class="md-muted-sm"
                                 style="margin-top:4px"
-                                x-text="status.enabled ? t('totp.enabled') : t('totp.notEnabled')"
+                                x-text="status.configured === false
+                                  ? t('totp.serverDisabled')
+                                  : (status.enabled ? t('totp.enabled') : t('totp.notEnabled'))"
                               ></div>
                             </div>
                             <span :class="`md-chip ${status.enabled ? 'md-chip--success' : 'md-chip--filled'}`">
@@ -738,7 +796,7 @@
                           <template x-if="!status.enabled">
                             <button
                               class="md-btn md-btn--filled"
-                              :disabled="loading"
+                              :disabled="loading || status.configured === false"
                               @click="handleSetup()"
                               x-text="t('totp.enable')"
                             ></button>

@@ -283,11 +283,13 @@ test_cron_overlap_is_skipped :: proc(t: ^testing.T) {
 
 @(test)
 test_cron_validate :: proc(t: ^testing.T) {
-	ok, msg := cron_validate("0 */5 * * * *")
-	testing.expect(t, ok, msg)
-	bad, why := cron_validate("not a cron")
-	testing.expect(t, !bad)
-	testing.expect(t, len(why) > 0)
+	ok := cron_validate("0 */5 * * * *")
+	defer delete(ok.next)
+	testing.expect(t, ok.valid, ok.message)
+	testing.expect(t, len(ok.next) == 2, "a valid expression previews two firings")
+	bad := cron_validate("not a cron")
+	testing.expect(t, !bad.valid)
+	testing.expect(t, len(bad.message) > 0)
 }
 
 @(test)

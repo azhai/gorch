@@ -234,14 +234,21 @@ cron_next :: proc(sv: ^Supervisor, name: string) -> i64 {
 	return cron.job_next(sv.cron_sched, name)
 }
 
-// cron_validate compiles an expression without touching the scheduler.
-cron_validate :: proc(expression: string) -> (bool, string) {
+// cron_validate compiles an expression without touching the scheduler, and
+// previews when it would fire so the config page can show it before the save.
+// `next` holds unix seconds and is owned by the caller.
+Cron_Check :: struct {
+	valid:   bool,
+	message: string,
+	next:    []i64, // up to two firing times
+}
+
+cron_validate :: proc(expression: string) -> Cron_Check {
 	if len(expression) == 0 {
-		return false, "expression is empty"
+		return Cron_Check{valid = false, message = "expression is empty"}
 	}
-	_, ok := cron.parse(expression)
-	if !ok {
-		return false, "not a valid cron expression"
+	if _, ok := cron.parse(expression); !ok {
+		return Cron_Check{valid = false, message = "not a valid cron expression"}
 	}
-	return true, ""
+	return Cron_Check{valid = true, next = cron.preview_next(expression, 2)}
 }

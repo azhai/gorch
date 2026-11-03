@@ -32,3 +32,12 @@ export function formatStartTime(startedAt) {
 export function formatUptime(startedAt, mode, now) {
   return mode === 'start' ? formatStartTime(startedAt) : formatUptimeElapsed(startedAt, now)
 }
+
+/** A finished run's duration, kept short enough for a single table row. */
+export function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '-'
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return s ? `${m}m ${s}s` : `${m}m`
+}

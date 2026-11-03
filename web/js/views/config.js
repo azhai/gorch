@@ -1,11 +1,13 @@
 import {
   createService,
   deleteService,
+  fetchCronHistory,
   fetchServiceConfig,
   saveConfigToFile,
   updateServiceConfig,
   validateCronExpression,
 } from '../api.js'
+import { formatDuration, formatStartTime } from '../format.js'
 import { i18n } from '../i18n.js'
 
 const RESTART_POLICIES = ['always', 'on-failure', 'never']
@@ -14,6 +16,14 @@ const BANNER_CLASS = {
   error: 'md-banner--error',
   success: 'md-banner--success',
   info: 'md-banner--info',
+}
+
+/** Scheduler statuses, in the order the panel can meet them. */
+const RUN_STATUS_KEYS = {
+  success: 'config.cronStatusSuccess',
+  failed: 'config.cronStatusFailed',
+  overlap: 'config.cronStatusOverlap',
+  started: 'config.cronStatusStarted',
 }
 
 /** Held as text while typing, parsed only when the payload is built. */
@@ -124,6 +134,8 @@ export function configView() {
     creatingName: '',
     cronValidating: false,
     cronResult: null,
+    cronRuns: [],
+    cronRunsLoading: false,
     restartPolicies: RESTART_POLICIES,
     sections: SECTIONS,
     open: {},
@@ -251,6 +263,7 @@ export function configView() {
     async selectService(name) {
       this.selected = name
       this.cronResult = null
+      this.cronRuns = []
       if (!name) {
         this.cfg = null
         this.originalCfg = null
@@ -283,6 +296,7 @@ export function configView() {
       this.loadEnvRows()
       this.open = {}
       for (const section of SECTIONS) if (section.openWhen(cfg)) this.open[section.key] = true
+      await this.loadCronRuns()
     },
 
     async pickService(name) {
@@ -323,6 +337,8 @@ export function configView() {
         this.showMsg(saveRes.message || i18n.t('config.saveToFileFailed'), 'error')
       } else {
         this.showMsg(i18n.t('config.savedAndApplied'), 'success')
+        // A changed schedule starts a fresh history; show it.
+        await this.loadCronRuns()
       }
 
       this.saving = false
@@ -407,6 +423,7 @@ export function configView() {
       this.envRows = []
       this.envConflicts = []
       this.cronResult = null
+      this.cronRuns = []
       this.open = {}
     },
 
@@ -417,6 +434,7 @@ export function configView() {
       this.cfg = null
       this.originalCfg = null
       this.envRows = []
+      this.cronRuns = []
       this.open = {}
       this.message = null
     },
@@ -430,6 +448,54 @@ export function configView() {
         })
       }
       return i18n.t('config.cronInvalid', { message: this.cronResult.message })
+    },
+
+    /** Recent runs of the selected schedule, newest first. */
+    async loadCronRuns() {
+      this.cronRuns = []
+      const cron = this.cfg && String(this.cfg.CRON || '').trim()
+      if (!this.selected || this.isCreating || !cron) return
+      this.cronRunsLoading = true
+      try {
+        const runs = await fetchCronHistory(this.selected)
+        this.cronRuns = [...runs].reverse()
+      } catch {
+        // A history that cannot be read is not an error worth a banner: the
+        // panel just stays empty and the refresh button invites a retry.
+        this.cronRuns = []
+      } finally {
+        this.cronRunsLoading = false
+      }
+    },
+
+    runChipClass(run) {
+      if (run.status === 'success') return 'md-chip--success'
+      if (run.status === 'failed') return 'md-chip--error'
+      if (run.status === 'overlap') return 'md-chip--plain'
+      return 'md-chip--filled'
+    },
+
+    runStatus(run) {
+      const key = RUN_STATUS_KEYS[run.status]
+      return key ? i18n.t(key) : run.status
+    },
+
+    runTime(run) {
+      return formatStartTime(run.startedAt)
+    },
+
+    /** Exit code and duration, or "still running" for a run with no end yet. */
+    runDetail(run) {
+      const parts = []
+      if (run.status === 'started') {
+        parts.push(i18n.t('config.cronRunRunning'))
+      } else if (run.endedAt) {
+        parts.push(formatDuration(run.endedAt - run.startedAt))
+      }
+      if (run.exitCode !== undefined && run.exitCode !== null) {
+        parts.push(`${i18n.t('config.cronRunExit')} ${run.exitCode}`)
+      }
+      return parts.join(' · ')
     },
 
     get cronBannerClass() {

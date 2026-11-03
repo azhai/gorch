@@ -213,3 +213,23 @@ test_same_expr_preserves_next :: proc(t: ^testing.T) {
 	testing.expect(t, job_next(s, "j") != first, "changed schedule recomputes next")
 	destroy_scheduler(s)
 }
+
+@(test)
+test_preview_and_format :: proc(t: ^testing.T) {
+	set_arena(t)
+	times := preview_next("*/5 * * * * *", 2)
+	defer delete(times)
+	testing.expect(t, len(times) == 2, "a valid expression previews two firings")
+	testing.expect(t, times[0] > 0 && times[1] > times[0], "firings are ordered and in the future")
+
+	// A malformed expression previews nothing rather than guessing.
+	testing.expect(t, preview_next("not a cron", 2) == nil)
+
+	// format_time is what the config page shows, so it must not leak a format
+	// verb that Odin printed as %!(NO VERB).
+	text := format_time(1_700_000_000)
+	testing.expect(t, !strings.contains(text, "%!"), text)
+	testing.expect(t, strings.has_suffix(text, " UTC"), text)
+	testing.expect(t, len(text) == len("2023-11-14 22:13:20 UTC"), text)
+	testing.expect(t, format_time(0) == "", "an unset time renders empty")
+}

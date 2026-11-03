@@ -1,5 +1,6 @@
 package totp
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:mem"
@@ -502,6 +503,12 @@ setup :: proc(t: ^TOTP, user: string) -> (SetupResult, Error) {
 	}
 	now := time.to_unix_seconds(time.now())
 
+	// The binding outlives this call, so it is allocated from the heap and not
+	// from whatever arena the caller happens to be using - the web layer calls
+	// this on a connection thread whose arena dies with the response. The
+	// result handed back to the caller stays on the caller's allocator.
+	prev_alloc := context.allocator
+	context.allocator = runtime.default_allocator()
 	sync.rw_mutex_lock(&t.mu)
 	b := Binding{
 		user_id    = strings.clone(user),
@@ -518,6 +525,7 @@ setup :: proc(t: ^TOTP, user: string) -> (SetupResult, Error) {
 	t.db.backups[user] = bcs[:]
 	ok_save := save_db(t)
 	sync.rw_mutex_unlock(&t.mu)
+	context.allocator = prev_alloc
 	delete(hashes)
 	if !ok_save {
 		return SetupResult{}, .Storage_Failure
@@ -580,6 +588,10 @@ is_code_used :: proc(t: ^TOTP, user: string, window: i64, code: string) -> bool 
 
 save_used_code :: proc(t: ^TOTP, user: string, window: i64, code: string) {
 	sync.rw_mutex_lock(&t.mu)
+	// The list is kept in the store, so it comes from the heap rather than the
+	// caller's arena (see setup).
+	prev_alloc := context.allocator
+	context.allocator = runtime.default_allocator()
 	// prune entries older than 90s (window granularity is 30s; keep recent)
 	now := time.to_unix_seconds(time.now())
 	kept := [dynamic]UsedCode{}
@@ -591,6 +603,7 @@ save_used_code :: proc(t: ^TOTP, user: string, window: i64, code: string) {
 	append(&kept, UsedCode{time_window = window, code = strings.clone(code), used_at = now})
 	t.db.used[user] = kept[:]
 	save_db(t)
+	context.allocator = prev_alloc
 	sync.rw_mutex_unlock(&t.mu)
 }
 
@@ -688,6 +701,8 @@ regenerate_backup_codes :: proc(t: ^TOTP, user: string) -> ([]string, Error) {
 		return nil, .Not_Enabled
 	}
 	codes := generate_backup_codes(10)
+	prev_alloc := context.allocator
+	context.allocator = runtime.default_allocator()
 	sync.rw_mutex_lock(&t.mu)
 	bcs := [dynamic]BackupCode{}
 	for c in codes {
@@ -696,6 +711,7 @@ regenerate_backup_codes :: proc(t: ^TOTP, user: string) -> ([]string, Error) {
 	t.db.backups[user] = bcs[:]
 	ok_save := save_db(t)
 	sync.rw_mutex_unlock(&t.mu)
+	context.allocator = prev_alloc
 	if !ok_save {
 		return nil, .Storage_Failure
 	}

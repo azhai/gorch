@@ -2,10 +2,9 @@ package web
 
 // Minimal HTTP surface for the Odin rewrite.
 //
-// This is deliberately not the finished server: the supervisor, log streaming
-// and TOTP endpoints still live only in the Go implementation. What is here is
-// enough for the SPA in web/ to load and render: static files, the URL-prefix
-// injection, a JWT login, the service list and the SSE heartbeat.
+// The supervisor, the log streaming and the config API live in their own files;
+// what is here is the transport: static files, the URL-prefix injection, a JWT
+// login and the routing table.
 
 import "core:fmt"
 import "core:mem/virtual"
@@ -20,6 +19,7 @@ import "../../lib/jwt"
 import glog "../../lib/log"
 import "../../lib/logfile"
 import "../../lib/status"
+import "../../lib/totp"
 
 // Provider is how the web layer reads and drives services. The supervisor package
 // fills it in; leaving the procs nil keeps the UI read-only (everything shows as
@@ -41,7 +41,34 @@ Provider :: struct {
 	add:           proc(user: rawptr, name: string, spec: config.ServiceConfig) -> string,
 	remove:        proc(user: rawptr, name: string) -> string,
 	save:          proc(user: rawptr) -> string,
-	validate_cron: proc(user: rawptr, expression: string) -> (bool, string),
+	validate_cron: proc(user: rawptr, expression: string) -> Cron_Check,
+	// cron_history backs the "recent runs" list. The slice it returns is
+	// allocated on the request arena, so the handler does not free it.
+	cron_history: proc(user: rawptr, name: string) -> []Cron_Run,
+	// totp is the second-factor store, nil when TOTP_ENABLE is off or the
+	// master key is missing. It is a plain pointer rather than a set of
+	// callbacks because the package holds no state the web layer can corrupt:
+	// every mutation goes through a locked method.
+	totp: ^totp.TOTP,
+}
+
+// Cron_Run is one entry of a scheduled service's history, flattened for JSON.
+Cron_Run :: struct {
+	started_at: i64,
+	ended_at:   i64, // 0 until the run finishes
+	has_ended:  bool,
+	exit_code:  int,
+	has_exit:   bool,
+	status:     string,
+	pid:        int,
+}
+
+// Cron_Check is what an expression check answers: whether it parses, and when
+// it would fire next (unix seconds, up to two times). The caller frees `next`.
+Cron_Check :: struct {
+	valid:   bool,
+	message: string,
+	next:    []i64,
 }
 
 Server :: struct {
@@ -266,6 +293,17 @@ handle_api :: proc(
 		}
 		handle_cron_validate(srv, conn, raw)
 
+	case strings.has_prefix(path, "/api/cron/") && strings.has_suffix(path, "/history"):
+		if method != "GET" {
+			send_json_error(conn, 405, "method not allowed")
+			return
+		}
+		name := strings.trim_suffix(strings.trim_prefix(path, "/api/cron/"), "/history")
+		handle_cron_history(srv, conn, name)
+
+	case strings.has_prefix(path, "/api/totp/"):
+		handle_totp(srv, conn, method, path, raw)
+
 	case path == "/api/events":
 		handle_sse(srv, conn, query)
 
@@ -275,6 +313,13 @@ handle_api :: proc(
 			return
 		}
 		handle_login(srv, conn, raw)
+
+	case path == "/api/auth/login/totp":
+		if method != "POST" {
+			send_json_error(conn, 405, "method not allowed")
+			return
+		}
+		handle_login_totp(srv, conn, raw)
 
 	case:
 		send_json_error(conn, 404, "not found")
@@ -309,8 +354,7 @@ authorized :: proc(srv: ^Server, path, query, raw: string) -> bool {
 
 handle_login :: proc(srv: ^Server, conn: net.TCP_Socket, raw: string) {
 	cfg := srv.cfg.web
-	body_idx := strings.index(raw, "\r\n\r\n")
-	body := "" if body_idx < 0 else raw[body_idx+4:]
+	body := request_body(raw)
 
 	username, _ := json_string_field(body, "username")
 	password, _ := json_string_field(body, "password")
@@ -320,11 +364,65 @@ handle_login :: proc(srv: ^Server, conn: net.TCP_Socket, raw: string) {
 		return
 	}
 
-	token := jwt.generate(username, cfg.web_pass)
+	// An enabled second factor turns the password into a first step: the SPA
+	// asks for a code and posts it to /auth/login/totp.
+	if t := srv.provider.totp; t != nil {
+		if st := totp.status(t, username); st.enabled {
+			send_json_ok(conn, 200, `{"requireTotp":true}`)
+			return
+		}
+	}
+
+	send_token(conn, username, cfg.web_pass)
+}
+
+// handle_login_totp finishes a login that stopped at the second factor. The
+// code arrives without a password, so the account name has to be checked
+// against the config again rather than trusted.
+handle_login_totp :: proc(srv: ^Server, conn: net.TCP_Socket, raw: string) {
+	cfg := srv.cfg.web
+	t := srv.provider.totp
+	if t == nil {
+		send_json_error(conn, 400, "TOTP is not enabled on this server")
+		return
+	}
+
+	body := request_body(raw)
+	username, _ := json_string_field(body, "username")
+	raw_code, _ := json_string_field(body, "code")
+	code := strings.trim_space(raw_code)
+
+	if username != cfg.web_user {
+		send_json_error(conn, 401, "invalid credentials")
+		return
+	}
+	if len(code) == 0 {
+		send_json_error(conn, 400, "code is required")
+		return
+	}
+
+	// Six characters is a TOTP; anything else is treated as a backup code,
+	// which is minted as "XXXX-XXXX".
+	err: totp.Error
+	if len(code) == 6 {
+		err = totp.verify(t, username, code)
+	} else {
+		err = totp.verify_backup(t, username, code)
+	}
+	if ec, msg := totp_error(err); ec != 0 {
+		send_json_error(conn, ec, msg)
+		return
+	}
+	send_token(conn, username, cfg.web_pass)
+}
+
+// send_token hands the SPA a JWT for a login that has passed every factor.
+send_token :: proc(conn: net.TCP_Socket, username, secret: string) {
+	token := jwt.generate(username, secret)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"token":`)
 	write_json_string(&b, token)
-	strings.write_string(&b, `}`)
+	strings.write_byte(&b, '}')
 	send_json_ok(conn, 200, strings.to_string(b))
 }
 

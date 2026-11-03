@@ -31,7 +31,7 @@ TOTP_DB = "auth_totp.db"
 |-------|-------------|
 | `TOTP_ENABLE` | Set to `true` to enable TOTP |
 | `TOTP_SECRET` | 32-byte hex-encoded master key (64 chars) |
-| `TOTP_DB` | SQLite database path for storing TOTP bindings |
+| `TOTP_DB` | Path of the JSON file that holds the TOTP bindings |
 
 ### 3. Restart gorch
 
@@ -55,11 +55,15 @@ If running in the foreground, just `Ctrl+C` and start again.
 1. Log in with your username and password
 2. Go to **TOTP Settings** page
 3. Click **Setup TOTP**
-4. Scan the QR code with your authenticator app (see [Recommended Apps](#recommended-authenticator-apps) below)
+4. Add the account to your authenticator app: this build shows the `otpauth://`
+   setup link and the secret key rather than a QR image, so either open the link
+   on the device that runs the app or type the key in by hand (see
+   [Recommended Apps](#recommended-authenticator-apps) below)
 5. Enter the 6-digit code from your app to verify
 6. Save the backup codes in a safe place
 
-From now on, every login requires both your password and a TOTP code.
+From now on, every login requires both your password and a TOTP code. Five wrong
+codes in a row lock the account for 15 minutes.
 
 ## Recommended Authenticator Apps
 

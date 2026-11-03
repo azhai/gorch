@@ -1,6 +1,7 @@
 package cron
 
 import "base:runtime"
+import "core:fmt"
 import "core:mem"
 import "core:time"
 import "core:sync"
@@ -509,6 +510,39 @@ next_of :: proc(s: Schedule, offset: i64, after: i64) -> i64 {
 		return t - offset
 	}
 	return -1
+}
+
+// preview_next returns the next `count` firing times of an expression without
+// registering a job, so a schedule can be checked before it is saved. Times are
+// unix seconds; formatting is left to the caller.
+preview_next :: proc(expression: string, count: int) -> []i64 {
+	s, ok := parse(expression)
+	if !ok || count <= 0 {
+		return nil
+	}
+	now := default_now()
+	offset := default_offset(now)
+	out := make([]i64, count)
+	t := now
+	for i in 0..<count {
+		t = next_of(s, offset, t)
+		if t < 0 {
+			return out[:i]
+		}
+		out[i] = t
+	}
+	return out
+}
+
+// format_time renders a firing time the way the config page shows it. The
+// scheduler runs on UTC (default_offset is 0), and saying so avoids the classic
+// "it fires at the wrong hour" bug report.
+format_time :: proc(unix: i64) -> string {
+	if unix <= 0 {
+		return ""
+	}
+	y, mo, d, h, mi, sec, _ := decompose(unix + default_offset(unix))
+	return fmt.tprintf("{}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} UTC", y, mo, d, h, mi, sec)
 }
 
 // ---------------------------------------------------------------------------
