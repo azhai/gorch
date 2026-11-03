@@ -385,6 +385,45 @@ a {
   color: var(--md-outline);
 }
 
+.md-label__req {
+  color: var(--md-error);
+  font-weight: 600;
+}
+
+/* The TOML key a field writes to, kept beside the human-readable name. */
+.md-key {
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--md-on-surface-variant);
+  background: var(--md-surface-container-high);
+}
+
+.md-key--value {
+  color: var(--md-primary);
+  background: var(--md-secondary-container);
+}
+
+.md-field--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+/* Standing hint under a field: what an empty value means, what the default is. */
+.md-field__desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--md-on-surface-variant);
+}
+
+.md-field__desc--error {
+  color: var(--md-error);
+}
+
 /* ── Field row helpers ─────────────────────────────────── */
 
 .md-row {
@@ -428,6 +467,111 @@ a {
   .md-grid-3 {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ── Collapsible form sections ─────────────────────────── */
+
+.md-section {
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 12px;
+  background: var(--md-surface-container-lowest);
+}
+
+.md-section__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  color: var(--md-on-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.md-section__head:hover {
+  background: color-mix(in srgb, var(--md-on-surface) 4%, transparent);
+}
+
+.md-section__head:focus-visible {
+  outline: 2px solid var(--md-primary);
+  outline-offset: -2px;
+}
+
+.md-section__caret {
+  flex: none;
+  color: var(--md-on-surface-variant);
+  transition: transform 120ms;
+}
+
+.md-section__head[aria-expanded="true"] .md-section__caret {
+  transform: rotate(90deg);
+}
+
+.md-section__title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.md-section__changed {
+  font-size: 11px;
+  color: var(--md-primary);
+}
+
+.md-section__body {
+  display: grid;
+  gap: 12px;
+  padding: 4px 12px 14px;
+  border-top: 1px solid var(--md-outline-variant);
+}
+
+/* Pushes everything after it to the far end of a flex row. */
+.md-push {
+  flex: 1;
+}
+
+.md-form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px -16px -16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--md-outline-variant);
+  border-radius: 0 0 12px 12px;
+  background: color-mix(in srgb, var(--md-surface-container) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.md-form-actions__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+}
+
+/* KEY / value pair in the environment editor. */
+.md-env-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.md-env-row input:first-child {
+  width: 34%;
+  min-width: 0;
+}
+
+.md-env-row input:nth-child(2) {
+  flex: 1;
+  min-width: 0;
 }
 
 /* ── Cards ─────────────────────────────────────────────── */
@@ -560,6 +704,30 @@ a {
 .md-chip--success {
   background: color-mix(in srgb, var(--md-success) 18%, var(--md-surface));
   color: var(--md-success);
+  border-color: transparent;
+}
+
+/* Service names are data, not labels: keep their spelling. */
+.md-chip--plain {
+  height: 28px;
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.md-chip--toggle {
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.md-chip--toggle:hover {
+  border-color: var(--md-on-surface-variant);
+}
+
+.md-chip--toggle[aria-pressed="true"] {
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
   border-color: transparent;
 }
 

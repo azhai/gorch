@@ -206,33 +206,35 @@
             <!-- ── Config ─────────────────────────────────────────────────── -->
             <template x-if="route === '/config'">
               <div x-data="configView()">
-                <div class="md-row" style="margin-bottom:16px">
+                <div class="md-row md-row--between" style="margin-bottom:16px">
                   <h2 x-text="t('config.title')"></h2>
-                  <select
-                    class="md-select"
-                    aria-label="Select service to configure"
-                    :value="selected"
-                    @change="pickService($event.target.value)"
-                  >
-                    <option value="" x-text="t('config.selectService')"></option>
-                    <template x-for="s in services" :key="s.name">
-                      <option :value="s.name" x-text="s.name"></option>
-                    </template>
-                  </select>
-                  <button
-                    class="md-btn md-btn--tonal md-btn--sm"
-                    aria-label="Create new service"
-                    @click="startCreate()"
-                    x-text="t('config.new')"
-                  ></button>
-                  <template x-if="selected && !isCreating">
+                  <div class="md-row md-row--tight">
+                    <select
+                      class="md-select"
+                      aria-label="Select service to configure"
+                      :value="selected"
+                      @change="pickService($event.target.value)"
+                    >
+                      <option value="" x-text="t('config.selectService')"></option>
+                      <template x-for="s in services" :key="s.name">
+                        <option :value="s.name" x-text="s.name"></option>
+                      </template>
+                    </select>
                     <button
-                      class="md-btn md-btn--danger md-btn--sm"
-                      :aria-label="`Delete service ${selected}`"
-                      @click="handleDelete()"
-                      x-text="t('config.delete')"
+                      class="md-btn md-btn--tonal md-btn--sm"
+                      aria-label="Create new service"
+                      @click="startCreate()"
+                      x-text="t('config.new')"
                     ></button>
-                  </template>
+                    <template x-if="selected && !isCreating">
+                      <button
+                        class="md-btn md-btn--danger md-btn--sm"
+                        :aria-label="`Delete service ${selected}`"
+                        @click="handleDelete()"
+                        x-text="t('config.delete')"
+                      ></button>
+                    </template>
+                  </div>
                 </div>
 
                 <template x-if="!cfg">
@@ -242,14 +244,19 @@
                 </template>
 
                 <template x-if="cfg">
-                  <div class="md-card md-field-group">
+                  <form
+                    class="md-card md-field-group"
+                    @submit.prevent="isCreating ? handleCreate() : handleSaveAndApply()"
+                  >
                     <template x-if="isCreating">
                       <div>
-                        <label class="md-label">
-                          <span x-text="`${t('config.serviceName')} *`"></span>
+                        <label class="md-label" for="cfg-name">
+                          <span x-text="t('config.serviceName')"></span>
+                          <span class="md-label__req" :title="t('config.required')">*</span>
                         </label>
                         <input
-                          class="md-field"
+                          id="cfg-name"
+                          class="md-field md-field--mono"
                           type="text"
                           x-model="creatingName"
                           :placeholder="t('config.serviceNamePlaceholder')"
@@ -258,221 +265,365 @@
                     </template>
 
                     <div>
-                      <label class="md-label">
-                        EXEC_CMD
-                        <span class="md-label__hint" x-text="` (${t('config.command')})`"></span>
-                      </label>
-                      <input class="md-field" type="text" x-model="cfg.EXEC_CMD" />
-                    </div>
-
-                    <div>
-                      <label class="md-label">
-                        RESTART_CMD
-                        <span class="md-label__hint" x-text="` (${t('config.gracefulReload')})`"></span>
+                      <label class="md-label" for="cfg-workdir">
+                        <span x-text="t('config.workingDir')"></span>
+                        <code class="md-key">WORK_DIR</code>
                       </label>
                       <input
-                        class="md-field"
+                        id="cfg-workdir"
+                        class="md-field md-field--mono"
                         type="text"
-                        x-model="cfg.RESTART_CMD"
-                        placeholder="e.g. nginx -s reload"
+                        x-model="cfg.WORK_DIR"
+                        :placeholder="t('config.workingDirPlaceholder')"
                       />
+                      <p class="md-field__desc" x-text="t('config.workingDirHint')"></p>
                     </div>
 
                     <div>
-                      <label class="md-label">
-                        PID_FILE
-                        <span class="md-label__hint" x-text="` (${t('config.pidFile')})`"></span>
+                      <label class="md-label" for="cfg-exec">
+                        <span x-text="t('config.command')"></span>
+                        <code class="md-key">EXEC_CMD</code>
+                        <span class="md-label__req" :title="t('config.required')">*</span>
                       </label>
                       <input
-                        class="md-field"
+                        id="cfg-exec"
+                        class="md-field md-field--mono"
                         type="text"
-                        x-model="cfg.PID_FILE"
-                        placeholder="e.g. /var/run/nginx.pid"
+                        x-model="cfg.EXEC_CMD"
+                        :placeholder="t('config.commandPlaceholder')"
                       />
+                      <p class="md-field__desc" x-text="t('config.commandHint')"></p>
                     </div>
 
                     <div>
-                      <label class="md-label">
-                        PRE_ACTION
-                        <span class="md-label__hint" x-text="` (${t('config.preAction')})`"></span>
-                      </label>
-                      <input
-                        class="md-field"
-                        type="text"
-                        x-model="cfg.PRE_ACTION"
-                        placeholder="e.g. pkill -f myservice"
-                      />
-                    </div>
-
-                    <div>
-                      <label class="md-label">
-                        WORK_DIR
-                        <span class="md-label__hint" x-text="` (${t('config.workingDir')})`"></span>
-                      </label>
-                      <input class="md-field" type="text" x-model="cfg.WORK_DIR" />
-                    </div>
-
-                    <div class="md-grid-3">
-                      <div>
-                        <label class="md-label">
-                          RESTART_POLICY
-                          <span class="md-label__hint" x-text="` (${t('config.restartPolicy')})`"></span>
-                        </label>
-                        <select class="md-field" x-model="cfg.RESTART_POLICY">
-                          <template x-for="opt in restartPolicies" :key="opt.value">
-                            <option :value="opt.value" x-text="opt.label"></option>
-                          </template>
-                        </select>
+                      <span class="md-label" id="cfg-policy-label">
+                        <span x-text="t('config.restartPolicy')"></span>
+                        <code class="md-key">RESTART_POLICY</code>
+                      </span>
+                      <div class="md-segmented" role="radiogroup" aria-labelledby="cfg-policy-label">
+                        <template x-for="p in restartPolicies" :key="p">
+                          <button
+                            type="button"
+                            class="md-segmented__item"
+                            role="radio"
+                            :aria-checked="cfg.RESTART_POLICY === p"
+                            :class="{ 'md-segmented__item--selected': cfg.RESTART_POLICY === p }"
+                            @click="cfg.RESTART_POLICY = p"
+                            x-text="p"
+                          ></button>
+                        </template>
                       </div>
-                      <div>
-                        <label class="md-label">
-                          CHECK_PORT
-                          <span class="md-label__hint" x-text="` (0 = ${t('config.off')})`"></span>
-                        </label>
-                        <input
-                          class="md-field"
-                          type="number"
-                          :value="cfg.CHECK_PORT || 0"
-                          placeholder="0"
-                          @input="setNumber('CHECK_PORT', $event.target.value)"
-                        />
-                      </div>
-                      <div>
-                        <label class="md-label">
-                          BACK_OFF
-                          <span class="md-label__hint" x-text="` (${t('config.backOff')})`"></span>
-                        </label>
-                        <input
-                          class="md-field"
-                          type="number"
-                          :value="cfg.BACK_OFF"
-                          @input="setNumber('BACK_OFF', $event.target.value)"
-                        />
-                      </div>
+                      <p class="md-field__desc" x-text="t('config.restartPolicyHint')"></p>
                     </div>
 
                     <div class="md-grid-2">
                       <div>
-                        <label class="md-label">
-                          STDOUT
-                          <span class="md-label__hint" x-text="` (${t('config.logOutput')})`"></span>
+                        <label class="md-label" for="cfg-backoff">
+                          <span x-text="t('config.backOffName')"></span>
+                          <code class="md-key">BACK_OFF</code>
                         </label>
-                        <input class="md-field" type="text" x-model="cfg.STDOUT" />
+                        <input
+                          id="cfg-backoff"
+                          class="md-field"
+                          type="number"
+                          min="0"
+                          x-model="cfg.BACK_OFF"
+                          placeholder="0"
+                        />
+                        <p class="md-field__desc" x-text="t('config.backOffHint')"></p>
                       </div>
                       <div>
-                        <label class="md-label">
-                          STDERR
-                          <span class="md-label__hint" x-text="` (${t('config.errorOutput')})`"></span>
+                        <label class="md-label" for="cfg-checkport">
+                          <span x-text="t('config.checkPort')"></span>
+                          <code class="md-key">CHECK_PORT</code>
                         </label>
-                        <input class="md-field" type="text" x-model="cfg.STDERR" />
+                        <input
+                          id="cfg-checkport"
+                          class="md-field"
+                          type="number"
+                          min="0"
+                          max="65535"
+                          x-model="cfg.CHECK_PORT"
+                          :placeholder="`0 (${t('config.off')})`"
+                        />
+                        <p class="md-field__desc" x-text="t('config.checkPortHint')"></p>
                       </div>
                     </div>
 
-                    <div>
-                      <label class="md-label">
-                        CRON
-                        <span class="md-label__hint" x-text="` (${t('config.schedule')})`"></span>
-                      </label>
-                      <input
-                        class="md-field"
-                        type="text"
-                        x-model="cfg.CRON"
-                        :placeholder="t('config.cronPlaceholder')"
-                        @input="cronResult = null"
-                      />
-                      <div class="md-row" style="margin-top:8px">
+                    <template x-for="s in sections" :key="s.key">
+                      <section class="md-section">
                         <button
-                          class="md-btn md-btn--tonal md-btn--sm"
-                          :disabled="!cfg.CRON || cronValidating"
-                          @click="handleValidateCron()"
-                          x-text="cronValidating ? t('config.checking') : t('config.validate')"
-                        ></button>
-                      </div>
-                      <template x-if="cronResult">
-                        <div :class="cronBannerClass" style="margin-top:8px" x-text="cronBannerText()"></div>
-                      </template>
-                    </div>
+                          type="button"
+                          class="md-section__head"
+                          :aria-expanded="isOpen(s.key)"
+                          @click="toggle(s.key)"
+                        >
+                          <span class="md-section__caret" aria-hidden="true">▸</span>
+                          <span class="md-section__title" x-text="t(s.title)"></span>
+                          <template x-for="k in sectionKeys(s)" :key="k">
+                            <code class="md-key md-key--value" x-text="k"></code>
+                          </template>
+                          <span class="md-section__changed" x-show="sectionChanged(s)" x-text="t('config.unsaved')"></span>
+                        </button>
 
-                    <div>
-                      <label class="md-label">
-                        DEPENDS_ON
-                        <span class="md-label__hint" x-text="` (${t('config.dependencies')})`"></span>
-                      </label>
-                      <input
-                        class="md-field"
-                        type="text"
-                        :value="depsText"
-                        :placeholder="t('config.depsPlaceholder')"
-                        @input="setDeps($event.target.value)"
-                      />
-                    </div>
+                        <div class="md-section__body" x-show="isOpen(s.key)">
+                          <template x-if="s.key === 'schedule'">
+                            <div class="md-field-group">
+                              <div>
+                                <label class="md-label" for="cfg-cron">
+                                  <span x-text="t('config.cronName')"></span>
+                                  <code class="md-key">CRON</code>
+                                </label>
+                                <div class="md-row md-row--tight">
+                                  <input
+                                    id="cfg-cron"
+                                    class="md-field md-field--mono"
+                                    style="flex:1"
+                                    type="text"
+                                    x-model="cfg.CRON"
+                                    @input="cronResult = null"
+                                    :placeholder="t('config.cronPlaceholder')"
+                                  />
+                                  <button
+                                    type="button"
+                                    class="md-btn md-btn--tonal"
+                                    :disabled="!cfg.CRON || cronValidating"
+                                    @click="handleValidateCron()"
+                                    x-text="cronValidating ? t('config.checking') : t('config.validate')"
+                                  ></button>
+                                </div>
+                                <p class="md-field__desc" x-text="t('config.cronHint')"></p>
+                                <template x-if="cronResult">
+                                  <div
+                                    :class="cronBannerClass"
+                                    style="margin-top:8px"
+                                    x-text="cronBannerText()"
+                                  ></div>
+                                </template>
+                              </div>
+                              <div x-show="cfg.CRON">
+                                <label class="md-label" for="cfg-cron-timeout">
+                                  <span x-text="t('config.cronTimeout')"></span>
+                                  <code class="md-key">CRON_TIMEOUT</code>
+                                </label>
+                                <input
+                                  id="cfg-cron-timeout"
+                                  class="md-field"
+                                  type="number"
+                                  min="0"
+                                  x-model="cfg.CRON_TIMEOUT"
+                                  placeholder="0"
+                                />
+                                <p class="md-field__desc" x-text="t('config.cronTimeoutHint')"></p>
+                              </div>
+                            </div>
+                          </template>
 
-                    <div>
-                      <div class="md-row md-row--between" style="margin-bottom:4px">
-                        <span class="md-label" style="margin:0">
-                          ENV_VARS
-                          <span class="md-label__hint" x-text="`(${t('config.environment')})`"></span>
-                        </span>
-                        <button class="md-btn md-btn--sm" @click="addEnvVar()" x-text="t('config.add')"></button>
-                      </div>
-                      <div class="md-field-group">
-                        <template x-for="entry in envEntries" :key="entry.k">
-                          <div class="md-row md-row--tight">
-                            <input
-                              class="md-field md-field--sm"
-                              style="width:33%"
-                              :value="entry.k"
-                              :placeholder="t('config.key')"
-                              @input="renameEnvVar(entry.k, $event.target.value, entry.v)"
-                            />
-                            <input
-                              class="md-field md-field--sm"
-                              style="flex:1"
-                              :value="entry.v"
-                              :placeholder="t('config.value')"
-                              @input="renameEnvVar(entry.k, entry.k, $event.target.value)"
-                            />
-                            <button
-                              class="md-btn md-btn--danger md-btn--sm"
-                              :aria-label="`Remove environment variable ${entry.k}`"
-                              @click="removeEnvVar(entry.k)"
-                            >
-                              x
-                            </button>
-                          </div>
-                        </template>
-                        <template x-if="envEntries.length === 0">
-                          <p class="md-muted-sm" x-text="t('config.noEnvVars')"></p>
-                        </template>
-                      </div>
-                    </div>
+                          <template x-if="s.key === 'process'">
+                            <div class="md-field-group">
+                              <div>
+                                <label class="md-label" for="cfg-restart-cmd">
+                                  <span x-text="t('config.reload')"></span>
+                                  <code class="md-key">RESTART_CMD</code>
+                                </label>
+                                <input
+                                  id="cfg-restart-cmd"
+                                  class="md-field md-field--mono"
+                                  type="text"
+                                  x-model="cfg.RESTART_CMD"
+                                  placeholder="nginx -s reload"
+                                />
+                                <p class="md-field__desc" x-text="t('config.gracefulReload')"></p>
+                              </div>
+                              <div>
+                                <label class="md-label" for="cfg-pre-action">
+                                  <span x-text="t('config.preActionName')"></span>
+                                  <code class="md-key">PRE_ACTION</code>
+                                </label>
+                                <input
+                                  id="cfg-pre-action"
+                                  class="md-field md-field--mono"
+                                  type="text"
+                                  x-model="cfg.PRE_ACTION"
+                                  placeholder="pkill -f myservice"
+                                />
+                                <p class="md-field__desc" x-text="t('config.preAction')"></p>
+                              </div>
+                              <div>
+                                <label class="md-label" for="cfg-pid-file">
+                                  <span x-text="t('config.pidFileName')"></span>
+                                  <code class="md-key">PID_FILE</code>
+                                </label>
+                                <input
+                                  id="cfg-pid-file"
+                                  class="md-field md-field--mono"
+                                  type="text"
+                                  x-model="cfg.PID_FILE"
+                                  placeholder="/var/run/nginx.pid"
+                                />
+                                <p class="md-field__desc" x-text="t('config.pidFile')"></p>
+                              </div>
+                            </div>
+                          </template>
 
-                    <template x-if="message">
-                      <div :class="`md-banner ${bannerClass}`" x-text="message"></div>
+                          <template x-if="s.key === 'deps'">
+                            <div class="md-field-group">
+                              <div>
+                                <span class="md-label">
+                                  <span x-text="t('config.dependencies')"></span>
+                                  <code class="md-key">DEPENDS_ON</code>
+                                </span>
+                                <div class="md-row md-row--tight" x-show="depChoices.length">
+                                  <template x-for="dep in depChoices" :key="dep.name">
+                                    <button
+                                      type="button"
+                                      class="md-chip md-chip--plain md-chip--toggle"
+                                      :aria-pressed="hasDep(dep.name)"
+                                      @click="toggleDep(dep.name)"
+                                      x-text="dep.name"
+                                    ></button>
+                                  </template>
+                                </div>
+                                <input
+                                  class="md-field md-field--sm md-field--mono"
+                                  style="margin-top:8px"
+                                  type="text"
+                                  :value="depsText"
+                                  @change="setDeps($event.target.value)"
+                                  :placeholder="t('config.depsPlaceholder')"
+                                  aria-label="DEPENDS_ON"
+                                />
+                                <p class="md-field__desc" x-text="t('config.dependenciesHint')"></p>
+                              </div>
+
+                              <div>
+                                <div class="md-row md-row--between" style="margin-bottom:4px">
+                                  <span class="md-label" style="margin:0">
+                                    <span x-text="t('config.environment')"></span>
+                                    <code class="md-key">ENV_VARS</code>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    class="md-btn md-btn--tonal md-btn--sm"
+                                    @click="addEnvVar()"
+                                    x-text="t('config.add')"
+                                  ></button>
+                                </div>
+                                <template x-if="envRows.length === 0">
+                                  <p class="md-muted-sm" x-text="t('config.noEnvVars')"></p>
+                                </template>
+                                <template x-for="(row, i) in envRows" :key="i">
+                                  <div class="md-env-row">
+                                    <input
+                                      class="md-field md-field--sm md-field--mono"
+                                      type="text"
+                                      x-model="row.k"
+                                      @input="commitEnv()"
+                                      :placeholder="t('config.key')"
+                                      :aria-label="t('config.key')"
+                                    />
+                                    <input
+                                      class="md-field md-field--sm"
+                                      type="text"
+                                      x-model="row.v"
+                                      :placeholder="t('config.value')"
+                                      :aria-label="t('config.value')"
+                                    />
+                                    <button
+                                      type="button"
+                                      class="md-btn md-btn--danger md-btn--sm"
+                                      :aria-label="`Remove environment variable ${row.k}`"
+                                      @click="removeEnvVar(i)"
+                                    >
+                                      x
+                                    </button>
+                                  </div>
+                                </template>
+                                <p
+                                  class="md-field__desc md-field__desc--error"
+                                  x-show="envConflicts.length"
+                                  x-text="t('config.envConflict', { keys: envConflicts.join(', ') })"
+                                ></p>
+                                <p class="md-field__desc" x-text="t('config.environmentHint')"></p>
+                              </div>
+                            </div>
+                          </template>
+
+                          <template x-if="s.key === 'logs'">
+                            <div class="md-field-group">
+                              <div class="md-grid-2">
+                                <div>
+                                  <label class="md-label" for="cfg-stdout">
+                                    <span x-text="t('config.logOutput')"></span>
+                                    <code class="md-key">STDOUT</code>
+                                  </label>
+                                  <input
+                                    id="cfg-stdout"
+                                    class="md-field md-field--mono"
+                                    type="text"
+                                    x-model="cfg.STDOUT"
+                                  />
+                                </div>
+                                <div>
+                                  <label class="md-label" for="cfg-stderr">
+                                    <span x-text="t('config.errorOutput')"></span>
+                                    <code class="md-key">STDERR</code>
+                                  </label>
+                                  <input
+                                    id="cfg-stderr"
+                                    class="md-field md-field--mono"
+                                    type="text"
+                                    x-model="cfg.STDERR"
+                                  />
+                                </div>
+                              </div>
+                              <p class="md-field__desc" x-text="t('config.logFilesHint')"></p>
+                            </div>
+                          </template>
+                        </div>
+                      </section>
                     </template>
 
-                    <div class="md-row md-row--tight">
-                      <template x-if="isCreating">
-                        <button
-                          class="md-btn md-btn--filled"
-                          :disabled="!canCreate"
-                          @click="handleCreate()"
-                          x-text="saving ? t('config.creating') : t('config.createService')"
-                        ></button>
-                      </template>
-                      <template x-if="!isCreating">
-                        <button
-                          class="md-btn md-btn--filled"
-                          :disabled="saving"
-                          @click="handleSaveAndApply()"
-                          x-text="saving ? t('config.saving') : t('config.saveAndApply')"
-                        ></button>
-                      </template>
-                      <template x-if="isCreating">
-                        <button class="md-btn" @click="cancelCreate()" x-text="t('config.cancel')"></button>
-                      </template>
+                    <template x-if="message">
+                      <div :class="`md-banner ${bannerClass}`" role="status" x-text="message"></div>
+                    </template>
+
+                    <div class="md-form-actions">
+                      <span class="md-form-actions__state" x-show="hasChanges()">
+                        <span x-text="t('config.unsaved')"></span>
+                        <code class="md-key md-key--value" x-text="changed.join(' ')"></code>
+                      </span>
+                      <span class="md-push"></span>
+                      <button
+                        type="button"
+                        class="md-btn"
+                        x-show="hasChanges()"
+                        @click="discard()"
+                        x-text="t('config.discard')"
+                      ></button>
+                      <button
+                        type="submit"
+                        class="md-btn md-btn--filled"
+                        x-show="!isCreating"
+                        :disabled="saving"
+                        x-text="saving ? t('config.saving') : t('config.saveAndApply')"
+                      ></button>
+                      <button
+                        type="submit"
+                        class="md-btn md-btn--filled"
+                        x-show="isCreating"
+                        :disabled="!canCreate"
+                        x-text="saving ? t('config.creating') : t('config.createService')"
+                      ></button>
+                      <button
+                        type="button"
+                        class="md-btn"
+                        x-show="isCreating"
+                        @click="cancelCreate()"
+                        x-text="t('config.cancel')"
+                      ></button>
                     </div>
-                  </div>
+                  </form>
                 </template>
               </div>
             </template>
