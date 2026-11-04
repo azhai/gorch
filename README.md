@@ -27,53 +27,87 @@ One binary is built from this repo: **`gorch`** — a process supervisor that ma
 
 It is written in Odin. The Web UI is embedded as compressed assets, so a single file is all you deploy; a `web/` directory next to the config still wins over the embedded copy file by file.
 
+> **The Odin binary has no subcommands.** There is no `install`, `uninstall`,
+> `start`, `stop`, `restart`, `status` or `logs` verb. Installing / removing the
+> system service is done by two shell scripts; controlling services is done from
+> the Web UI or REST API. Those subcommands belong to the Go implementation on
+> the `lite` branch.
+
 ## Install
 
-### From Source
+### 1. Build the binary
 
-Requires [Odin](https://odin-lang.org/) `dev-2026-10` or newer; `make deps` fetches the one vendored submodule.
+Requires [Odin](https://odin-lang.org/) `dev-2026-10` or newer on the **build** machine; the target machine needs nothing (Linux binaries are static musl, macOS binaries target macOS 11+).
 
 ```sh
-make deps        # fetch vendor/oboe
-make one         # build ./bin/gorch for this machine
+git clone https://github.com/azhai/gorch.git
+cd gorch
+git checkout v0.4.4      # or the tag you want to deploy
+make deps                # fetch vendor/oboe, the only submodule
+make one                 # build ./bin/gorch for this machine
 ```
 
-Release builds for macOS and Linux, arm64 and amd64 (macOS 11+; Linux binaries are static musl and need nothing on the target):
+For release artifacts of macOS / Linux × arm64 / amd64:
 
 ```sh
-make build                                   # all four targets, plus bin/SHA256SUMS
+make build                                   # four targets + bin/SHA256SUMS
 make build TARGETS="linux_arm64"             # one target
 make build CROSS_CC="x86_64-linux-musl-gcc"  # override the cross linker (default: zig cc)
+make release                                 # build + pack Linux binaries with upx --brute
 ```
 
-Linux links the vendored minimal zlib in `third_party/zlib` (used for the state snapshot) into the static binary. A native build just uses the system zlib.
+The full matrix is meant to be built on macOS: darwin targets link natively, linux targets are cross-linked with `zig cc` + static musl plus the vendored minimal zlib in `third_party/zlib`; a native build uses the system zlib. On a Linux host, build only the `linux_*` targets. `make release` additionally writes `gorch-<version>-linux-<arch>.upx` next to the plain binaries when `upx` is installed — UPX unpacks transparently at load time, so a `.upx` file is a drop-in replacement. GitHub tags carry source archives only; binaries are produced by these `make` targets (or copied from a `bin/` you already built).
 
-### Install as System Service
+### 2. Put the binary on the target
 
-The Odin binary has no `install` subcommand. Two standalone scripts write the
-systemd unit (Linux) or launchd plist (macOS) that runs gorch in the foreground
-and keeps it alive:
+One file is enough — no runtime, no shared libraries, no `web/` directory. Verify the checksum (run it in `bin/`, or keep `SHA256SUMS` next to the artifact), then install it under the plain name `gorch` so the service scripts can find it:
 
 ```sh
-sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml   # system-wide
-./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml
-sudo ./scripts/gorch-uninstall                                # remove the service
-./scripts/gorch-uninstall --user
+sha256sum -c SHA256SUMS --ignore-missing     # Linux; on macOS: shasum -a 256 gorch-v0.4.4-darwin-arm64
+chmod +x gorch-v0.4.4-linux-amd64
+sudo install -m 755 gorch-v0.4.4-linux-amd64 /usr/local/bin/gorch
+gorch --help
 ```
 
-`gorch-uninstall` removes only the service file — the binary, config, logs and
-state are kept. Use `--dry-run` to preview the generated unit/plist first, and
-`--no-start` to write it without enabling. See the [CLI Reference](./docs/cli.md)
-for all options and the files each script writes. On macOS,
-[launchd-ui](https://github.com/azu/launchd-ui) is also handy for managing the
-resulting agent.
+Use `gorch-v0.4.4-linux-amd64.upx` instead if you want the smaller UPX-packed build. If the binary lives somewhere else, pass `--bin PATH` to `gorch-install` or set `GORCH_BIN`.
 
-## Quick Start
+### 3. Install as a system service
 
-### 1. Create config
+The binary runs in the foreground, so a service manager is what keeps it alive. Two standalone POSIX `sh` scripts generate the systemd unit (Linux) or launchd plist (macOS):
 
 ```sh
-cp gorch.toml.example gorch.toml
+sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml    # system-wide (root required)
+./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml  # user-level, no root
+./scripts/gorch-install --dry-run --config /etc/gorch/gorch.toml   # preview only, writes nothing
+```
+
+| Option | `gorch-install` | `gorch-uninstall` |
+|--------|:---------------:|:----------------:|
+| `-c, --config PATH` | config file to use | — |
+| `-b, --bin PATH` | binary to run | — |
+| `-u, --user` | user-level service | user-level service |
+| `-n, --no-start` | write the unit but do not enable/start | — |
+| `-d, --dry-run` | preview, change nothing | preview, change nothing |
+| `-h, --help` | show help | show help |
+
+Config search order: `--config`, `$GORCH_CONFIG`, `/etc/gorch/gorch.toml`, `~/.config/gorch/gorch.toml`, `./gorch.toml` (`--user` puts the home path first). Binary search order: `--bin`, `$GORCH_BIN`, `./bin/gorch`, `./gorch`, `$PATH`.
+
+| OS | Scope | Service file |
+|----|-------|-------------|
+| Linux | system | `/etc/systemd/system/gorch.service` |
+| Linux | `--user` | `~/.config/systemd/user/gorch.service` |
+| macOS | system | `/Library/LaunchDaemons/com.github.azhai.gorch.plist` |
+| macOS | `--user` | `~/Library/LaunchAgents/com.github.azhai.gorch.plist` |
+
+The generated definition is `gorch -c <config>` — `Type=simple` + `Restart=on-failure` on systemd, `KeepAlive` + `RunAtLoad` on launchd. There is no `start` verb and no `PIDFile`: the Odin binary does not fork. The script then runs `systemctl daemon-reload && systemctl enable --now gorch.service` (or `launchctl load -w <plist>`), which you can also do by hand when `--no-start` was used. On a systemd user service, run `loginctl enable-linger <user>` if it must survive logout. See the [CLI Reference](./docs/cli.md) for every option and generated file. On macOS, [launchd-ui](https://github.com/azu/launchd-ui) is also handy for managing the resulting agent.
+
+## Usage
+
+### 1. Create the config
+
+```sh
+sudo mkdir -p /etc/gorch
+sudo cp gorch.toml.example /etc/gorch/gorch.toml
 ```
 
 Minimal config:
@@ -110,33 +144,59 @@ RESTART_POLICY = "always"
 BACK_OFF = 3
 ```
 
-### 2. Start gorch
+### 2. Run gorch
 
 ```sh
-gorch                          # foreground, config auto-detected
-gorch -c /etc/gorch/gorch.toml # explicit config
+gorch                             # foreground, config auto-detected
+gorch -c /etc/gorch/gorch.toml    # explicit config
+gorch --config=/etc/gorch/gorch.toml
+gorch --help
+gorch --version
 ```
 
-There is no daemonize flag: gorch stays in the foreground and stops its children
-on `SIGTERM`/`SIGINT`. To run it in the background, install it as a service with
-`gorch-install` (above).
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-c, --config <path>` | auto-detected | Config file path |
+| `-h, --help` | | Print usage and exit |
+| `-v, --version` | | Print version and exit |
 
-### 3. Check status
+Without `-c`, the first existing file wins: `$GORCH_CONFIG`, `./gorch.toml`, `~/.config/gorch/gorch.toml`, `/etc/gorch/gorch.toml`. If none exists, gorch exits with an error. `GORCH_WEB_DIR` overrides where the SPA assets are read from (the binary has an embedded copy).
 
-Open the Web UI dashboard, or query the API:
+> Note: `--version` currently prints a fixed string, not the release tag from
+> `git describe`; use `SHA256SUMS` to identify an artifact.
+
+There is **no daemonize flag** (`-d`): gorch stays in the foreground and stops every child before exiting on `SIGTERM`/`SIGINT`. For background operation, install it as a service (above).
+
+### 3. Control gorch itself
+
+Once installed as a service, use the service manager — not gorch subcommands:
+
+```sh
+# Linux / systemd (add --user for a user-level install)
+sudo systemctl status gorch.service
+sudo systemctl restart gorch.service
+sudo systemctl stop gorch.service        # also stops all managed children
+sudo journalctl -u gorch.service -f
+
+# macOS / launchd
+sudo launchctl list com.github.azhai.gorch
+sudo launchctl unload -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
+sudo launchctl load -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
+```
+
+On systemd, gorch's own output goes to the journal; on launchd, to `/tmp/gorch/logs/gorch.{out,err}.log`.
+
+### 4. Control the managed services
+
+Use the dashboard's Start / Stop / Restart buttons, or the same REST API:
 
 ```sh
 curl -u admin:secret http://127.0.0.1:8080/api/services
-```
-
-### 4. Control services
-
-Use the dashboard's Start / Stop / Restart buttons, or the same API:
-
-```sh
 curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
 curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/stop
 ```
+
+The `-u` credentials are only needed when `WEB_AUTH = true`. With `URL_PREFIX = "/gorch"` (e.g. behind a reverse proxy at `https://host/gorch/`), prepend the prefix to every UI and API path: `/gorch/api/services`.
 
 ### 5. View logs
 
@@ -146,18 +206,37 @@ The Web UI has a live log viewer (stdout / stderr); the API returns a JSON tail:
 curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
 ```
 
-The `-u` credentials are only needed when `WEB_AUTH = true`. With
-`URL_PREFIX = "/gorch"`, prepend the prefix to every API path.
-
 ### 6. Web UI
 
-With `WEB_ENABLE = true`, open `http://127.0.0.1:8080` in your browser.
+With `WEB_ENABLE = true`, open `http://127.0.0.1:8080` in your browser (default `WEB_ADDR`; set `URL_PREFIX` for a sub-path).
 
 Features:
-- Dashboard with real-time status
+- Dashboard with real-time status (including per-service RSS)
 - Log viewer (stdout / stderr)
 - Config editor with two-step save
 - Cron validation
+
+## Uninstall
+
+Uninstalling means removing the systemd unit / launchd plist. The script stops and disables the service first, then deletes **only the service file**:
+
+```sh
+sudo ./scripts/gorch-uninstall       # system-wide
+./scripts/gorch-uninstall --user    # user-level
+./scripts/gorch-uninstall --dry-run # preview the actions, change nothing
+```
+
+The binary, config, logs and persisted state are intentionally kept, so reinstalling or upgrading is just replacing the binary and running `gorch-install` again. If you want a complete cleanup, stop the service first and remove these files yourself:
+
+| Path | What it is |
+|------|-----------|
+| `/usr/local/bin/gorch` (or your `--bin` path) | The binary |
+| `/etc/gorch/gorch.toml`, `~/.config/gorch/gorch.toml` | Config (contains web credentials) |
+| `<LOG_DIR>`, default `/tmp/gorch/logs` | Service stdout / stderr logs |
+| `/tmp/gorch/gorch.state`, `<LOG_DIR>/gorch.state` | Persisted service state |
+| `TOTP_DB`, default `/var/lib/gorch/totp.db` | TOTP binding database |
+
+Also run `loginctl disable-linger <user>` if you enabled lingering for a systemd user service. See the [CLI Reference](./docs/cli.md) for manual `systemctl` / `launchctl` equivalents.
 
 ## Runtime Files
 
@@ -172,6 +251,7 @@ writes lives there unless you point `LOG_DIR` elsewhere:
 
 `LOG_DIR` defaults to `/tmp/gorch/logs`; with no `LOG_DIR` set, the state file is
 `/tmp/gorch/gorch.state`. `STDOUT` / `STDERR` override individual log paths.
+`TOTP_DB` defaults to `/var/lib/gorch/totp.db` when TOTP is enabled.
 
 The Odin build has no Unix socket, supervisor PID file or CLI ↔ supervisor IPC —
 service control goes through the Web UI and REST API. The global `PID_FILE` and
