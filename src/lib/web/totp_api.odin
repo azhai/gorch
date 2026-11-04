@@ -15,6 +15,7 @@ import "core:fmt"
 import "core:net"
 import "core:strings"
 
+import "../../lib/qr"
 import "../../lib/totp"
 
 handle_totp :: proc(srv: ^Server, conn: net.TCP_Socket, method, path, raw: string) {
@@ -74,6 +75,19 @@ handle_totp :: proc(srv: ^Server, conn: net.TCP_Socket, method, path, raw: strin
 		write_json_string(&b, res.secret)
 		strings.write_string(&b, `,"otpauthUri":`)
 		write_json_string(&b, res.otpauth_uri)
+
+		// The QR image is drawn here rather than in the browser, so the client
+		// needs no QR library. Encoding the URI cannot fail in practice; if it
+		// ever does (an unreasonably long user name overflows the symbol), the
+		// field is simply absent and the page falls back to the manual secret.
+		if m, qr_err := qr.encode(res.otpauth_uri); qr_err == .None {
+			strings.write_string(&b, `,"qrCode":`)
+			uri := qr.data_uri(m, 6)
+			write_json_string(&b, uri)
+			delete(uri)
+			qr.destroy(&m)
+		}
+
 		strings.write_string(&b, `,"backupCodes":[`)
 		for c, i in res.backup_codes {
 			if i > 0 {

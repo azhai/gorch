@@ -55,10 +55,7 @@ If running in the foreground, just `Ctrl+C` and start again.
 1. Log in with your username and password
 2. Go to **TOTP Settings** page
 3. Click **Setup TOTP**
-4. Add the account to your authenticator app: this build shows the `otpauth://`
-   setup link and the secret key rather than a QR image, so either open the link
-   on the device that runs the app or type the key in by hand (see
-   [Recommended Apps](#recommended-authenticator-apps) below)
+4. Scan the QR code with your authenticator app (see [Recommended Apps](#recommended-authenticator-apps) below), or type the secret key in by hand
 5. Enter the 6-digit code from your app to verify
 6. Save the backup codes in a safe place
 

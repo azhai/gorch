@@ -225,7 +225,7 @@
             <!-- ── Config ─────────────────────────────────────────────────── -->
             <template x-if="route === '/config'">
               <div x-data="configView()">
-                <div class="md-row md-row--between" style="margin-bottom:16px">
+                <div class="md-row" style="margin-bottom:16px">
                   <h2 x-text="t('config.title')"></h2>
                   <div class="md-row md-row--tight">
                     <select
@@ -702,9 +702,9 @@
                   <div class="md-field-group">
                     <div class="md-card" style="text-align:center">
                       <h3 style="margin-bottom:16px" x-text="t('totp.scanQr')"></h3>
-                      <!-- The server sends no QR image yet, only the otpauth
-                           URI, so the card degrades to a link instead of a
-                           broken <img>. -->
+                      <!-- The server draws the symbol and sends it as a PNG
+                           data URI. If it ever comes back empty the card shows
+                           the URI to type in, never a broken image. -->
                       <template x-if="setupData.qrCode">
                         <img class="md-qr" :src="setupData.qrCode" alt="TOTP QR Code" />
                       </template>

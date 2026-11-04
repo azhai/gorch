@@ -650,21 +650,23 @@ a {
   text-decoration-color: currentColor;
 }
 
-/* The log page is the card's secondary entry point: bottom right, quiet. */
+/* The log page is the card's secondary entry point: bottom right, quiet. It is
+   underlined like the name so both read as links rather than labels. */
 .md-service-card__logs {
   margin-left: auto;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  text-decoration: none;
   color: var(--md-primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
 
 .md-service-card__logs:hover,
 .md-service-card__logs:focus-visible {
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  text-decoration-thickness: 2px;
 }
 
 .md-status-dot {
@@ -974,10 +976,15 @@ a {
 }
 
 .md-qr {
-  width: 192px;
-  height: 192px;
+  /* The image is rendered at one pixel per module times a whole scale, so it is
+     shown at its natural size: any scaling would blur the module edges a
+     scanner has to resolve. */
+  max-width: 100%;
+  height: auto;
   border-radius: 8px;
   border: 1px solid var(--md-outline-variant);
+  background: #fff;
+  image-rendering: pixelated;
 }
 
 @media (prefers-reduced-motion: reduce) {
