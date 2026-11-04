@@ -72,7 +72,7 @@ When a service starts (or restarts), gorch runs the following steps in order:
 
 ### Graceful Reload via RESTART_CMD
 
-For daemons that support a reload signal (e.g. `nginx -s reload`, `angie -s reload`), set `RESTART_CMD` so that `gorch restart <name>` triggers a graceful reload instead of killing and restarting the process.
+For daemons that support a reload signal (e.g. `nginx -s reload`, `angie -s reload`), set `RESTART_CMD` so that restarting the service (from the Web UI or `POST /api/services/<name>/restart`) triggers a graceful reload instead of killing and restarting the process.
 
 ### Daemonized Process Tracking
 
@@ -174,7 +174,7 @@ STDOUT = '/tmp/gorch/logs/angie.out.log'
 STDERR = '/tmp/gorch/logs/angie.err.log'
 ```
 
-**Why PID doesn't change on restart** — When `RESTART_CMD` is set, `gorch restart` runs the reload command (e.g. `nginx -s reload`) instead of stop+start. The master process never exits, so its PID stays the same. Workers are replaced gracefully without dropping connections.
+**Why PID doesn't change on restart** — When `RESTART_CMD` is set, a restart runs the reload command (e.g. `nginx -s reload`) instead of stop+start. The master process never exits, so its PID stays the same. Workers are replaced gracefully without dropping connections.
 
 ### Redis (Homebrew on macOS)
 
@@ -249,11 +249,11 @@ STDERR = '/tmp/gorch/logs/backup.err.log'
 
 ### Normal restart (stop + start)
 
-For most services, `gorch restart <name>` stops the process and starts it again. The PID changes because a new process is created.
+For most services, restarting (Web UI or `POST /api/services/<name>/restart`) stops the process and starts it again. The PID changes because a new process is created.
 
 ### Graceful reload (RESTART_CMD)
 
-When `RESTART_CMD` is set, `gorch restart` runs that command instead of stop+start. The process stays alive — only its workers or configuration are reloaded. The PID doesn't change.
+When `RESTART_CMD` is set, a restart runs that command instead of stop+start. The process stays alive — only its workers or configuration are reloaded. The PID doesn't change.
 
 This is ideal for daemons like Nginx/Angie that support reload signals:
 
@@ -264,6 +264,6 @@ This is ideal for daemons like Nginx/Angie that support reload signals:
 If you want to force a full stop+start even when `RESTART_CMD` is set, stop the service first, then start it:
 
 ```sh
-gorch stop -s nginx
-gorch start -s nginx
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/stop
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/start
 ```

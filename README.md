@@ -10,7 +10,7 @@ Single binary, no runtime dependencies. Declarative TOML config. Built-in Web UI
 
 ## Why gorch?
 
-- **Dual interface** — Manage services from both the **CLI** and a **Web UI**, whichever you prefer. Simple and intuitive.
+- **Web UI + REST API** — Manage every service from a browser dashboard or script it against a small JSON API. The Odin build dropped the Go version's CLI subcommands; installing as a service is handled by two shell scripts.
 - **TOTP 2FA for web login** — Account credentials are stored in the config file, but with TOTP two-factor authentication, even if the password leaks, your dashboard stays protected.
 - **Single binary, zero dependencies** — One file, drop it anywhere and run.
 - **Graceful reload support** — For Nginx/Angie-style daemons, `RESTART_CMD` keeps the master PID stable while reloading workers.
@@ -27,7 +27,7 @@ Two binaries are built from this repo:
 
 | Binary | What it does |
 |--------|-------------|
-| **gorch** | Process supervisor — manages long-running services and cron jobs, with CLI **and** Web UI |
+| **gorch** | Process supervisor — manages long-running services and cron jobs, with a built-in Web UI and REST API |
 | **weblite** | Lightweight static file server — serves a directory with directory listing, zero config |
 
 Both are written in Odin. The Web UI is embedded into the `gorch` binary as gzip-compressed assets, so a single file is all you deploy; a `web/` directory next to the config still wins over the embedded copy.
@@ -55,13 +55,23 @@ Linux links the vendored minimal zlib in `third_party/zlib` (used for the state 
 
 ### Install as System Service
 
-On macOS, [launchd-ui](https://github.com/azu/launchd-ui) is recommended for managing services.
+The Odin binary has no `install` subcommand. Two standalone scripts write the
+systemd unit (Linux) or launchd plist (macOS) that runs gorch in the foreground
+and keeps it alive:
 
 ```sh
-gorch install            # system-wide (Linux: systemd, macOS: launchd)
-gorch install --user     # user-level service
-gorch uninstall          # remove
+sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml   # system-wide
+./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml
+sudo ./scripts/gorch-uninstall                                # remove the service
+./scripts/gorch-uninstall --user
 ```
+
+`gorch-uninstall` removes only the service file — the binary, config, logs and
+state are kept. Use `--dry-run` to preview the generated unit/plist first, and
+`--no-start` to write it without enabling. See the [CLI Reference](./docs/cli.md)
+for all options and the files each script writes. On macOS,
+[launchd-ui](https://github.com/azu/launchd-ui) is also handy for managing the
+resulting agent.
 
 ## Quick Start
 
@@ -108,35 +118,41 @@ BACK_OFF = 3
 ### 2. Start gorch
 
 ```sh
-gorch start                    # foreground, default config
-gorch start -c /etc/gorch.toml # specify config path
-gorch start -d                 # daemonize (background)
+gorch                          # foreground, config auto-detected
+gorch -c /etc/gorch/gorch.toml # explicit config
 ```
+
+There is no daemonize flag: gorch stays in the foreground and stops its children
+on `SIGTERM`/`SIGINT`. To run it in the background, install it as a service with
+`gorch-install` (above).
 
 ### 3. Check status
 
+Open the Web UI dashboard, or query the API:
+
 ```sh
-gorch status
-gorch status -s api            # single service
-gorch status --json            # JSON output
-gorch status -l                # live refresh
+curl -u admin:secret http://127.0.0.1:8080/api/services
 ```
 
 ### 4. Control services
 
+Use the dashboard's Start / Stop / Restart buttons, or the same API:
+
 ```sh
-gorch restart -s api
-gorch stop -s api
-gorch stop                     # stop all
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/stop
 ```
 
 ### 5. View logs
 
+The Web UI has a live log viewer (stdout / stderr); the API returns a JSON tail:
+
 ```sh
-gorch logs -s api              # last 100 lines
-gorch logs -s api -n 500      # last 500 lines
-gorch logs -s api -f          # follow (tail -f)
+curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
 ```
+
+The `-u` credentials are only needed when `WEB_AUTH = true`. With
+`URL_PREFIX = "/gorch"`, prepend the prefix to every API path.
 
 ### 6. Web UI
 
@@ -158,25 +174,28 @@ Serves the `./public` directory on port 8000 with auto-generated directory listi
 
 ## Runtime Files
 
-gorch keeps all of its own state in one directory, `/tmp/gorch`:
+On startup gorch creates `/tmp/gorch` and its `logs/` subdirectory. Everything it
+writes lives there unless you point `LOG_DIR` elsewhere:
 
 | Path | Purpose |
 |------|---------|
-| `/tmp/gorch/gorch.pid` | Supervisor PID file |
-| `/tmp/gorch/gorch-services.lock` | PIDs of managed services (used to adopt processes across restarts) |
-| `/tmp/gorch/gorch.sock` | Unix socket for CLI ↔ supervisor IPC |
-| `/tmp/gorch/<name>.pid` | Per-service PID file |
-| `/tmp/gorch/logs/<name>.out.log` | Service stdout (from `LOG_DIR`) |
-| `/tmp/gorch/logs/<name>.err.log` | Service stderr (from `LOG_DIR`) |
+| `<LOG_DIR>/<name>.out.log` | Service stdout (default when `STDOUT` is unset) |
+| `<LOG_DIR>/<name>.err.log` | Service stderr (default when `STDERR` is unset) |
+| `<LOG_DIR>/gorch.state` | Atomic snapshot of service state (oboe cache) |
 
-Override them with the global `LOG_DIR`, `PID_FILE` and `SERVICES_LOCK` fields.
+`LOG_DIR` defaults to `/tmp/gorch/logs`; with no `LOG_DIR` set, the state file is
+`/tmp/gorch/gorch.state`. `STDOUT` / `STDERR` override individual log paths.
+
+The Odin build has no Unix socket, supervisor PID file or CLI ↔ supervisor IPC —
+service control goes through the Web UI and REST API. The global `PID_FILE` and
+`SERVICES_LOCK` keys are still accepted for config compatibility but are unused.
 
 > **Note:** `/tmp` is cleared on reboot (and periodically on macOS), so logs do not survive a restart. Point `LOG_DIR` at a persistent directory if you need to keep them.
 
 ## Documentation
 
 - [Configuration](./docs/configuration.md) — all config fields, cron expressions, environment variables, service recipes
-- [CLI Reference](./docs/cli.md) — all commands and flags
+- [CLI Reference](./docs/cli.md) — binary flags, service scripts, and the REST API
 - [Web UI](./docs/web-ui.md) — web interface features, sub-path deployment
 - [TOTP 2FA](./docs/totp.md) — two-factor authentication setup, recommended apps
 - [Architecture](./docs/architecture.md) — system design and tech stack

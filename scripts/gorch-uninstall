@@ -1,0 +1,113 @@
+#!/bin/sh
+# Remove the gorch system service installed by scripts/gorch-install.
+#
+# Stops and disables the service, then deletes only the service file. The
+# binary, gorch.toml, logs and persisted state are left alone on purpose.
+#
+# Keep SERVICE_NAME / LAUNCHD_LABEL and the service paths in sync with
+# scripts/gorch-install.
+
+set -eu
+
+SERVICE_NAME=gorch.service
+LAUNCHD_LABEL=com.github.azhai.gorch
+
+usage() {
+	cat <<'EOF'
+Usage: gorch-uninstall [options]
+
+Remove the gorch system service (systemd on Linux, launchd on macOS).
+
+Options:
+  -u, --user     remove the user-level service instead of the system-wide one
+  -d, --dry-run  print the actions, change nothing
+  -h, --help     show this help
+
+A system-wide install normally needs root:
+  sudo ./scripts/gorch-uninstall
+EOF
+}
+
+die() { printf 'gorch-uninstall: error: %s\n' "$*" >&2; exit 1; }
+info() { printf 'gorch-uninstall: %s\n' "$*"; }
+
+USER_MODE=0
+DRY_RUN=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-u | --user) USER_MODE=1; shift ;;
+	-d | --dry-run) DRY_RUN=1; shift ;;
+	-h | --help) usage; exit 0 ;;
+	*) die "unknown option: $1 (try --help)" ;;
+	esac
+done
+
+OS=$(uname -s)
+case "$OS" in
+Linux) PLATFORM=systemd ;;
+Darwin) PLATFORM=launchd ;;
+*) die "unsupported OS: $OS (only Linux and macOS are supported)" ;;
+esac
+
+HOME_DIR=${HOME:-$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}
+[ -n "$HOME_DIR" ] || die "cannot determine home directory"
+
+if [ "$PLATFORM" = systemd ]; then
+	if [ "$USER_MODE" -eq 1 ]; then
+		UNIT_PATH="$HOME_DIR/.config/systemd/user/$SERVICE_NAME"
+		SCOPE=user
+	else
+		UNIT_PATH="/etc/systemd/system/$SERVICE_NAME"
+		SCOPE=system
+	fi
+else
+	if [ "$USER_MODE" -eq 1 ]; then
+		UNIT_PATH="$HOME_DIR/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
+		SCOPE=user
+	else
+		UNIT_PATH="/Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+		SCOPE=system
+	fi
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+	printf '# would remove: %s (%s scope)\n' "$UNIT_PATH" "$SCOPE"
+	if [ "$PLATFORM" = systemd ]; then
+		if [ "$USER_MODE" -eq 1 ]; then
+			printf '# would run: systemctl --user stop %s; systemctl --user disable %s; systemctl --user daemon-reload\n' "$SERVICE_NAME" "$SERVICE_NAME"
+		else
+			printf '# would run: systemctl stop %s; systemctl disable %s; systemctl daemon-reload\n' "$SERVICE_NAME" "$SERVICE_NAME"
+		fi
+	else
+		printf '# would run: launchctl unload -w %s\n' "$UNIT_PATH"
+	fi
+	exit 0
+fi
+
+if [ ! -f "$UNIT_PATH" ]; then
+	info "no service file at $UNIT_PATH; nothing to do"
+	exit 0
+fi
+
+UNIT_DIR=$(dirname "$UNIT_PATH")
+[ -w "$UNIT_DIR" ] || die "cannot write to $UNIT_DIR; re-run with sudo to remove a system-wide service"
+
+if [ "$PLATFORM" = systemd ]; then
+	if [ "$USER_MODE" -eq 1 ]; then
+		systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+		systemctl --user disable "$SERVICE_NAME" 2>/dev/null || true
+		systemctl --user daemon-reload || die "systemctl --user daemon-reload failed"
+	else
+		systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+		systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+		systemctl daemon-reload || die "systemctl daemon-reload failed"
+	fi
+else
+	launchctl unload -w "$UNIT_PATH" 2>/dev/null || true
+fi
+
+rm -f "$UNIT_PATH" || die "cannot remove $UNIT_PATH"
+info "removed $UNIT_PATH"
+info "gorch uninstalled ($SCOPE $PLATFORM service)"
+info "the binary, config, logs and state were kept"

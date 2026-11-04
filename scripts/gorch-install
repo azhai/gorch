@@ -1,0 +1,229 @@
+#!/bin/sh
+# Install gorch (the Odin build) as a system service.
+#
+# The Odin binary has no CLI subcommands: it runs the supervisor in the
+# foreground until SIGTERM/SIGINT, so the service manager is what keeps it
+# alive. That is why ExecStart / ProgramArguments is just `gorch -c <config>`
+# with no `start` verb and no PIDFile (both belonged to the old Go build).
+#
+# Linux:  systemd unit  (/etc/systemd/system or ~/.config/systemd/user)
+# macOS:  launchd plist (/Library/LaunchDaemons or ~/Library/LaunchAgents)
+#
+# Keep SERVICE_NAME / LAUNCHD_LABEL and the service paths in sync with
+# scripts/gorch-uninstall.
+
+set -eu
+
+SERVICE_NAME=gorch.service
+LAUNCHD_LABEL=com.github.azhai.gorch
+RUNTIME_LOG_DIR=/tmp/gorch/logs
+
+usage() {
+	cat <<'EOF'
+Usage: gorch-install [options]
+
+Install gorch as a system service (systemd on Linux, launchd on macOS).
+
+Options:
+  -c, --config PATH   gorch.toml to run with (auto-detected if omitted)
+  -b, --bin PATH      gorch binary to run  (auto-detected if omitted)
+  -u, --user          user-level service instead of system-wide
+  -n, --no-start      write the service file but do not enable/start it
+  -d, --dry-run       print the service file and actions, change nothing
+  -h, --help          show this help
+
+Config search order: --config, $GORCH_CONFIG, /etc/gorch/gorch.toml,
+~/.config/gorch/gorch.toml, ./gorch.toml (the --user variants come first).
+Binary search order: --bin, $GORCH_BIN, ./bin/gorch, ./gorch, `command -v gorch`.
+
+A system-wide install normally needs root:
+  sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml
+EOF
+}
+
+die() { printf 'gorch-install: error: %s\n' "$*" >&2; exit 1; }
+info() { printf 'gorch-install: %s\n' "$*"; }
+
+# Portable absolute path: macOS has no `readlink -f`.
+abspath() {
+	case "$1" in
+	/*) printf '%s\n' "$1" ;;
+	*) printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")" ;;
+	esac
+}
+
+xml_escape() {
+	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
+}
+
+USER_MODE=0
+NO_START=0
+DRY_RUN=0
+BIN=""
+CONFIG=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-c | --config) [ $# -ge 2 ] || die "$1 needs a path"; CONFIG=$2; shift 2 ;;
+	-b | --bin) [ $# -ge 2 ] || die "$1 needs a path"; BIN=$2; shift 2 ;;
+	-u | --user) USER_MODE=1; shift ;;
+	-n | --no-start) NO_START=1; shift ;;
+	-d | --dry-run) DRY_RUN=1; shift ;;
+	-h | --help) usage; exit 0 ;;
+	*) die "unknown option: $1 (try --help)" ;;
+	esac
+done
+
+OS=$(uname -s)
+case "$OS" in
+Linux) PLATFORM=systemd ;;
+Darwin) PLATFORM=launchd ;;
+*) die "unsupported OS: $OS (only Linux and macOS are supported)" ;;
+esac
+
+HOME_DIR=${HOME:-$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}
+[ -n "$HOME_DIR" ] || die "cannot determine home directory"
+
+# ── Locate the binary ───────────────────────────────────────
+if [ -z "$BIN" ] && [ -n "${GORCH_BIN:-}" ]; then BIN=$GORCH_BIN; fi
+if [ -z "$BIN" ] && [ -x ./bin/gorch ]; then BIN=./bin/gorch; fi
+if [ -z "$BIN" ] && [ -x ./gorch ]; then BIN=./gorch; fi
+if [ -z "$BIN" ] && command -v gorch >/dev/null 2>&1; then BIN=$(command -v gorch); fi
+[ -n "$BIN" ] || die "cannot find the gorch binary; pass --bin PATH"
+[ -x "$BIN" ] || die "binary is not executable: $BIN"
+BIN=$(abspath "$BIN")
+
+# ── Locate the config ───────────────────────────────────────
+if [ -z "$CONFIG" ] && [ -n "${GORCH_CONFIG:-}" ]; then CONFIG=$GORCH_CONFIG; fi
+if [ -z "$CONFIG" ]; then
+	if [ "$USER_MODE" -eq 1 ]; then
+		CANDIDATES="$HOME_DIR/.config/gorch/gorch.toml /etc/gorch/gorch.toml ./gorch.toml"
+	else
+		CANDIDATES="/etc/gorch/gorch.toml $HOME_DIR/.config/gorch/gorch.toml ./gorch.toml"
+	fi
+	for cand in $CANDIDATES; do
+		if [ -f "$cand" ]; then CONFIG=$cand; break; fi
+	done
+fi
+[ -n "$CONFIG" ] || die "cannot find gorch.toml; pass --config PATH (see gorch.toml.example)"
+[ -f "$CONFIG" ] || die "config file does not exist: $CONFIG"
+CONFIG=$(abspath "$CONFIG")
+CONFIG_DIR=$(dirname "$CONFIG")
+
+# ── Build the service file ──────────────────────────────────
+if [ "$PLATFORM" = systemd ]; then
+	if [ "$USER_MODE" -eq 1 ]; then
+		UNIT_PATH="$HOME_DIR/.config/systemd/user/$SERVICE_NAME"
+		WANTED_BY=default.target
+		SCOPE="user"
+	else
+		UNIT_PATH="/etc/systemd/system/$SERVICE_NAME"
+		WANTED_BY=multi-user.target
+		SCOPE="system"
+	fi
+
+	UNIT=$(printf '%s\n' \
+		'[Unit]' \
+		'Description=gorch process supervisor' \
+		'After=network.target' \
+		'' \
+		'[Service]' \
+		'Type=simple' \
+		"ExecStart=\"$BIN\" -c \"$CONFIG\"" \
+		"WorkingDirectory=$CONFIG_DIR" \
+		'Restart=on-failure' \
+		'RestartSec=5' \
+		'TimeoutStopSec=30' \
+		'' \
+		'[Install]' \
+		"WantedBy=$WANTED_BY")
+else
+	if [ "$USER_MODE" -eq 1 ]; then
+		UNIT_PATH="$HOME_DIR/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
+		SCOPE="user"
+	else
+		UNIT_PATH="/Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+		SCOPE="system"
+	fi
+
+	UNIT=$(printf '%s\n' \
+		'<?xml version="1.0" encoding="UTF-8"?>' \
+		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+		'<plist version="1.0">' \
+		'<dict>' \
+		'    <key>Label</key>' \
+		"    <string>$LAUNCHD_LABEL</string>" \
+		'    <key>ProgramArguments</key>' \
+		'    <array>' \
+		"        <string>$(xml_escape "$BIN")</string>" \
+		'        <string>-c</string>' \
+		"        <string>$(xml_escape "$CONFIG")</string>" \
+		'    </array>' \
+		'    <key>WorkingDirectory</key>' \
+		"    <string>$(xml_escape "$CONFIG_DIR")</string>" \
+		'    <key>KeepAlive</key>' \
+		'    <true/>' \
+		'    <key>RunAtLoad</key>' \
+		'    <true/>' \
+		'    <key>StandardOutPath</key>' \
+		"    <string>$RUNTIME_LOG_DIR/gorch.out.log</string>" \
+		'    <key>StandardErrorPath</key>' \
+		"    <string>$RUNTIME_LOG_DIR/gorch.err.log</string>" \
+		'</dict>' \
+		'</plist>')
+fi
+
+UNIT_DIR=$(dirname "$UNIT_PATH")
+
+if [ "$DRY_RUN" -eq 1 ]; then
+	printf '# %s (%s scope)\n' "$UNIT_PATH" "$SCOPE"
+	printf '%s\n' "$UNIT"
+	printf '# would run: '
+	if [ "$NO_START" -eq 1 ]; then
+		printf '(no start: --no-start)\n'
+	elif [ "$PLATFORM" = systemd ]; then
+		if [ "$USER_MODE" -eq 1 ]; then
+			printf 'systemctl --user daemon-reload && systemctl --user enable --now %s\n' "$SERVICE_NAME"
+		else
+			printf 'systemctl daemon-reload && systemctl enable --now %s\n' "$SERVICE_NAME"
+		fi
+	else
+		printf 'launchctl load -w %s\n' "$UNIT_PATH"
+	fi
+	exit 0
+fi
+
+if [ -d "$UNIT_DIR" ]; then
+	[ -w "$UNIT_DIR" ] || die "cannot write to $UNIT_DIR; re-run with sudo for a system-wide install"
+else
+	mkdir -p "$UNIT_DIR" || die "cannot create $UNIT_DIR; re-run with sudo for a system-wide install"
+fi
+mkdir -p "$RUNTIME_LOG_DIR" || die "cannot create $RUNTIME_LOG_DIR"
+printf '%s\n' "$UNIT" > "$UNIT_PATH"
+chmod 644 "$UNIT_PATH"
+info "wrote $UNIT_PATH"
+
+if [ "$NO_START" -eq 1 ]; then
+	info "service file written; start it with gorch-install again without --no-start"
+	exit 0
+fi
+
+if [ "$PLATFORM" = systemd ]; then
+	if [ "$USER_MODE" -eq 1 ]; then
+		systemctl --user daemon-reload || die "systemctl --user daemon-reload failed"
+		systemctl --user enable --now "$SERVICE_NAME" || die "failed to enable --now $SERVICE_NAME"
+		info "check: systemctl --user status $SERVICE_NAME"
+		info "to survive logout, also run: loginctl enable-linger $(id -un)"
+	else
+		systemctl daemon-reload || die "systemctl daemon-reload failed"
+		systemctl enable --now "$SERVICE_NAME" || die "failed to enable --now $SERVICE_NAME"
+		info "check: systemctl status $SERVICE_NAME"
+	fi
+else
+	# Unload first so a re-install picks up the new plist; ignore a missing load.
+	launchctl unload "$UNIT_PATH" 2>/dev/null || true
+	launchctl load -w "$UNIT_PATH" || die "launchctl load failed: $UNIT_PATH"
+	info "check: launchctl list $LAUNCHD_LABEL"
+fi
+
+info "gorch installed as a $SCOPE $PLATFORM service (binary: $BIN, config: $CONFIG)"

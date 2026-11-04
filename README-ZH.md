@@ -10,7 +10,7 @@
 
 ## 为什么选择 gorch？
 
-- **双界面管理** — 同时提供 **命令行（CLI）** 和 **Web 界面**，怎么方便怎么来，简单直观。
+- **Web 界面 + REST API** — 通过浏览器仪表盘管理服务，或用简洁的 JSON API 写脚本自动化。Odin 版去掉了 Go 版的 CLI 子命令，安装为系统服务改由两个 shell 脚本负责。
 - **Web 登录支持 TOTP 两阶段认证** — 账号密码直接写在配置文件里，但有了 TOTP 二阶段认证，就算密码泄露了也不怕。
 - **单二进制、零依赖** — 一个文件，放哪儿都能跑。
 - **优雅重载支持** — 对于 Nginx/Angie 这类守护进程，`RESTART_CMD` 让主进程 PID 保持稳定，只重启 worker。
@@ -27,7 +27,7 @@ gorch 非常适合 Web 应用、API 服务、定时任务、无状态守护进�
 
 | 二进制 | 功能 |
 |--------|------|
-| **gorch** | 进程管理工具 — 管理常驻服务、定时任务，提供 CLI **和** Web 界面 |
+| **gorch** | 进程管理工具 — 管理常驻服务、定时任务，内置 Web 界面与 REST API |
 | **weblite** | 轻量级静态文件服务器 — 零配置，支持目录列表，直接 serve 一个目录 |
 
 两者均为 Odin 编写。Web 界面以 gzip 压缩后嵌入 `gorch` 二进制，部署只需一个文件；配置旁若存在 `web/` 目录则优先于内嵌副本。
@@ -55,13 +55,20 @@ Linux 静态链接会带上 `third_party/zlib` 里的精简 zlib 源码（状态
 
 ### 安装为系统服务
 
-macOS 下推荐使用 [launchd-ui](https://github.com/azu/launchd-ui) 管理服务。
+Odin 二进制没有 `install` 子命令。两个独立脚本负责生成 systemd unit（Linux）或
+launchd plist（macOS），让 gorch 前台运行并由服务管理器守护：
 
 ```sh
-gorch install            # 系统级安装（Linux: systemd, macOS: launchd）
-gorch install --user     # 用户级安装
-gorch uninstall          # 卸载
+sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml   # 系统级
+./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml
+sudo ./scripts/gorch-uninstall                                # 卸载服务
+./scripts/gorch-uninstall --user
 ```
+
+`gorch-uninstall` 只删除服务文件，二进制、配置、日志和状态文件都会保留。
+可先用 `--dry-run` 预览生成内容，或用 `--no-start` 只写文件不启用。全部参数及
+各脚本写入的路径见[命令参考](./docs/cli-ZH.md)。macOS 下也可用
+[launchd-ui](https://github.com/azu/launchd-ui) 管理生成的 agent。
 
 ## 快速上手
 
@@ -108,35 +115,40 @@ BACK_OFF = 3
 ### 2. 启动 gorch
 
 ```sh
-gorch start                    # 前台运行，默认配置
-gorch start -c /etc/gorch.toml # 指定配置文件路径
-gorch start -d                 # 以守护进程方式运行
+gorch                          # 前台运行，自动查找配置
+gorch -c /etc/gorch/gorch.toml # 显式指定配置
 ```
+
+没有守护进程参数：gorch 一直前台运行，收到 `SIGTERM`/`SIGINT` 时会先停掉所有
+子进程。需要后台常驻请用上面的 `gorch-install` 安装为服务。
 
 ### 3. 查看状态
 
+打开 Web 仪表盘，或查询 API：
+
 ```sh
-gorch status
-gorch status -s api            # 查看单个服务
-gorch status --json            # JSON 格式输出
-gorch status -l                # 实时刷新
+curl -u admin:secret http://127.0.0.1:8080/api/services
 ```
 
 ### 4. 控制服务
 
+用仪表盘上的 启动 / 停止 / 重启 按钮，或调用同样的 API：
+
 ```sh
-gorch restart -s api
-gorch stop -s api
-gorch stop                     # 停止全部
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/stop
 ```
 
 ### 5. 查看日志
 
+Web 界面提供实时的 stdout / stderr 日志查看器；API 返回 JSON 格式的尾部内容：
+
 ```sh
-gorch logs -s api              # 最近 100 行
-gorch logs -s api -n 500      # 最近 500 行
-gorch logs -s api -f          # 实时跟踪（tail -f）
+curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
 ```
+
+只有 `WEB_AUTH = true` 时才需要 `-u` 账号密码。配置了 `URL_PREFIX = "/gorch"`，
+所有 API 路径都要加上前缀。
 
 ### 6. Web 管理界面
 
@@ -158,25 +170,28 @@ weblite -d ./public -p 8000
 
 ## 运行时文件
 
-gorch 把自己的全部状态都放在同一个目录 `/tmp/gorch` 下：
+gorch 启动时会创建 `/tmp/gorch` 及其 `logs/` 子目录。除非用 `LOG_DIR` 指向别处，
+它写入的文件都在这里：
 
 | 路径 | 用途 |
 |------|------|
-| `/tmp/gorch/gorch.pid` | supervisor 的 PID 文件 |
-| `/tmp/gorch/gorch-services.lock` | 被管理服务进程的 PID（重启后用于接管进程） |
-| `/tmp/gorch/gorch.sock` | CLI 与 supervisor 通信的 Unix socket |
-| `/tmp/gorch/<名称>.pid` | 单个服务的 PID 文件 |
-| `/tmp/gorch/logs/<名称>.out.log` | 服务标准输出（由 `LOG_DIR` 决定） |
-| `/tmp/gorch/logs/<名称>.err.log` | 服务标准错误（由 `LOG_DIR` 决定） |
+| `<LOG_DIR>/<名称>.out.log` | 服务标准输出（未设置 `STDOUT` 时的默认值） |
+| `<LOG_DIR>/<名称>.err.log` | 服务标准错误（未设置 `STDERR` 时的默认值） |
+| `<LOG_DIR>/gorch.state` | 服务状态的原子快照（oboe cache） |
 
-可通过全局字段 `LOG_DIR`、`PID_FILE`、`SERVICES_LOCK` 覆盖。
+`LOG_DIR` 默认为 `/tmp/gorch/logs`；未设置 `LOG_DIR` 时状态文件为
+`/tmp/gorch/gorch.state`。`STDOUT` / `STDERR` 可覆盖单个服务的日志路径。
+
+Odin 版没有 Unix socket、supervisor PID 文件，也没有 CLI 与 supervisor 的 IPC——
+服务控制走 Web 界面和 REST API。全局 `PID_FILE`、`SERVICES_LOCK` 两个键仍会被
+接受（兼容旧配置），但不再使用。
 
 > **注意：** `/tmp` 在系统重启后会被清空（macOS 还会定期清理），因此日志不会保留。如需长期保存，请把 `LOG_DIR` 指向持久化目录。
 
 ## 文档
 
 - [配置说明](./docs/configuration-ZH.md) — 所有配置字段、cron 表达式、环境变量、服务配置示例
-- [命令参考](./docs/cli-ZH.md) — 所有命令和参数
+- [命令参考](./docs/cli-ZH.md) — 二进制参数、服务脚本、REST API
 - [Web 界面](./docs/web-ui-ZH.md) — Web 功能、子目录部署
 - [TOTP 两阶段认证](./docs/totp-ZH.md) — 2FA 设置方法、推荐 APP
 - [架构设计](./docs/architecture-ZH.md) — 系统设计和技术栈

@@ -68,7 +68,7 @@ gorch 负责，当 gorch 没运行时产生的日志会在下次启动时按其�
 
 ### 通过 RESTART_CMD 优雅重载
 
-对于支持重载信号的守护进程（如 `nginx -s reload`、`angie -s reload`），设置 `RESTART_CMD` 后，`gorch restart <名称>` 会触发优雅重载，而非杀进程再启动。
+对于支持重载信号的守护进程（如 `nginx -s reload`、`angie -s reload`），设置 `RESTART_CMD` 后，重启服务（Web 界面或 `POST /api/services/<名称>/restart`）会触发优雅重载，而非杀进程再启动。
 
 ### 守护进程跟踪
 
@@ -170,7 +170,7 @@ STDOUT = '/tmp/gorch/logs/angie.out.log'
 STDERR = '/tmp/gorch/logs/angie.err.log'
 ```
 
-**为什么重启后 PID 不变** — 设置了 `RESTART_CMD` 时，`gorch restart` 执行的是重载命令（如 `nginx -s reload`），而不是 stop+start。master 进程从未退出，所以 PID 保持不变。worker 进程被优雅地替换，不会中断连接。
+**为什么重启后 PID 不变** — 设置了 `RESTART_CMD` 时，重启执行的是重载命令（如 `nginx -s reload`），而不是 stop+start。master 进程从未退出，所以 PID 保持不变。worker 进程被优雅地替换，不会中断连接。
 
 ### Redis（macOS Homebrew 安装）
 
@@ -245,11 +245,11 @@ STDERR = '/tmp/gorch/logs/backup.err.log'
 
 ### 普通重启（stop + start）
 
-对于大多数服务，`gorch restart <名称>` 会先停止进程，再重新启动。PID 会变化，因为创建了新的进程。
+对于大多数服务，重启（Web 界面或 `POST /api/services/<名称>/restart`）会先停止进程，再重新启动。PID 会变化，因为创建了新的进程。
 
 ### 优雅重载（RESTART_CMD）
 
-设置了 `RESTART_CMD` 时，`gorch restart` 执行该命令而非 stop+start。进程保持运行 — 只有 worker 或配置被重新加载。PID 不变。
+设置了 `RESTART_CMD` 时，重启会执行该命令而非 stop+start。进程保持运行 — 只有 worker 或配置被重新加载。PID 不变。
 
 这对于支持 reload 信号的守护进程（如 Nginx/Angie）非常理想：
 
@@ -260,6 +260,6 @@ STDERR = '/tmp/gorch/logs/backup.err.log'
 如果即使设置了 `RESTART_CMD` 也想强制完全 stop+start，先停止再启动：
 
 ```sh
-gorch stop -s nginx
-gorch start -s nginx
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/stop
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/start
 ```

@@ -1,82 +1,145 @@
 # CLI Reference
 
-## Commands
+The Odin build of `gorch` has **no subcommands**. The binary *is* the supervisor:
+it loads a TOML config, starts the configured services, serves the Web UI and
+REST API, and stays in the foreground until `SIGTERM`/`SIGINT` arrives — at which
+point it stops every child before exiting. Service control lives in the Web UI
+and the REST API; installing gorch as a system service is handled by two shell
+scripts.
 
-| Command | Description |
-|---------|-------------|
-| `gorch start [-c config] [-d] [-s name]` | Start services (`-d` to daemonize) |
-| `gorch stop [-s name]` | Stop all or specific service |
-| `gorch restart -s <name>` | Restart a service |
-| `gorch status [-s name] [-j] [-l]` | Show status (`-j` for JSON, `-l` for live refresh) |
-| `gorch logs -s <name> [-n lines] [-f] [-P]` | View service logs (`-f` follow, `-P` purge) |
-| `gorch install [--user]` | Install as system service |
-| `gorch uninstall [--user]` | Uninstall system service |
+> **Coming from the Go version?** The Go implementation on the `lite` branch has
+> `start`, `stop`, `restart`, `status`, `logs`, `install` and `uninstall`
+> subcommands. None of them exist in the Odin build documented here.
 
-## Global Flags
+## Invocation
+
+```sh
+gorch                             # foreground, config auto-detected
+gorch -c /etc/gorch/gorch.toml    # explicit config
+gorch --config=/etc/gorch/gorch.toml
+gorch --version
+gorch --help
+```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-c, --config` | `gorch.toml` | Config file path |
+| `-c, --config <path>` | auto-detected | Config file path |
+| `-h, --help` | | Print usage and exit |
+| `-v, --version` | | Print version and exit |
 
-## Command Details
+There is no daemonize flag (`-d`). To run in the background, let a service
+manager own the process — see [Install as a service](#install-as-a-service) —
+or use your shell's job control.
 
-### start
+### Config lookup order
 
-```sh
-gorch start                    # foreground, all services
-gorch start -d                 # daemonize (background)
-gorch start -c /etc/gorch.toml # specify config
-gorch start -s api             # start single service
-```
+Without `-c`, the first existing file wins:
 
-### stop
+1. `$GORCH_CONFIG`
+2. `./gorch.toml`
+3. `~/.config/gorch/gorch.toml`
+4. `/etc/gorch/gorch.toml`
 
-```sh
-gorch stop                     # stop all services
-gorch stop -s api              # stop specific service
-```
+If none exists, gorch exits with an error. `GORCH_WEB_DIR` additionally overrides
+where the SPA assets are read from (the binary has an embedded copy).
 
-### restart
+## Install as a service
 
-```sh
-gorch restart -s api           # restart service
-```
-
-If the service has `RESTART_CMD` set, a graceful reload is performed instead of stop+start.
-
-### status
+Two standalone POSIX `sh` scripts replace the Go version's `install` /
+`uninstall` commands. They write a service definition that runs gorch in the
+foreground and let systemd/launchd supervise it.
 
 ```sh
-gorch status                   # all services
-gorch status -s api            # single service
-gorch status -j                # JSON output
-gorch status -l                # live refresh (1s interval)
+sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml   # Linux/systemd or macOS/launchd
+./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml
+sudo ./scripts/gorch-uninstall                                # remove the service
+./scripts/gorch-uninstall --user
 ```
 
-### logs
+A system-wide install needs root (the unit/plist lives in a system directory);
+`--user` does not. `gorch-uninstall` only removes the service file — the binary,
+config, logs and persisted state are kept.
+
+Release binaries are named `gorch-<version>-<os>-<arch>`. Install one under the
+plain name first, or point `--bin` at it:
 
 ```sh
-gorch logs -s api              # last 100 lines
-gorch logs -s api -n 500      # last 500 lines
-gorch logs -s api -f          # follow (tail -f)
-gorch logs -P                 # purge all log files
+sudo install -m 755 gorch-v0.4.3-linux-amd64 /usr/local/bin/gorch
 ```
 
-### install / uninstall
+### Script options
+
+| `gorch-install` | Description |
+|-----------------|-------------|
+| `-c, --config PATH` | gorch.toml to run with (auto-detected if omitted) |
+| `-b, --bin PATH` | gorch binary to run (searches `$GORCH_BIN`, `./bin/gorch`, `./gorch`, `$PATH`) |
+| `-u, --user` | user-level service instead of system-wide |
+| `-n, --no-start` | write the service file but do not enable/start it |
+| `-d, --dry-run` | print the service file and actions, change nothing |
+| `-h, --help` | show help |
+
+| `gorch-uninstall` | Description |
+|-------------------|-------------|
+| `-u, --user` | remove the user-level service |
+| `-d, --dry-run` | print the actions, change nothing |
+| `-h, --help` | show help |
+
+Preview before installing (nothing is written):
 
 ```sh
-gorch install                  # system-wide (Linux: systemd, macOS: launchd)
-gorch install --user           # user-level service
-gorch uninstall                # remove system service
-gorch uninstall --user         # remove user service
+./scripts/gorch-install --dry-run --config /etc/gorch/gorch.toml
 ```
 
-`gorch install` automatically writes the service file, loads and starts it. If auto-start fails, load manually:
+### Files the scripts write
+
+| OS | Scope | Service file |
+|----|-------|--------------|
+| Linux | system | `/etc/systemd/system/gorch.service` |
+| Linux | `--user` | `~/.config/systemd/user/gorch.service` |
+| macOS | system | `/Library/LaunchDaemons/com.github.azhai.gorch.plist` |
+| macOS | `--user` | `~/Library/LaunchAgents/com.github.azhai.gorch.plist` |
+
+The generated definition is `gorch -c <config>` with `Type=simple` /
+`Restart=on-failure` on systemd and `KeepAlive` + `RunAtLoad` on launchd. There
+is no `start` verb and no `PIDFile` — the Odin binary does not fork or expose a
+CLI. On systemd, output goes to the journal; on launchd it goes to
+`/tmp/gorch/logs/gorch.{out,err}.log`.
+
+`gorch-install` runs `systemctl daemon-reload && systemctl enable --now
+gorch.service` (or `launchctl load -w <plist>`). If that fails, load manually:
 
 ```sh
-# macOS:
-launchctl load -w ~/Library/LaunchAgents/com.github.azhai.gorch.plist
-# Linux:
-systemctl daemon-reload
-systemctl enable --now gorch
+# Linux
+sudo systemctl daemon-reload
+sudo systemctl enable --now gorch.service
+# Linux, user scope
+systemctl --user daemon-reload
+systemctl --user enable --now gorch.service
+# macOS
+sudo launchctl load -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
 ```
+
+A systemd user service stops when you log out. To keep it running, also run
+`loginctl enable-linger <user>`.
+
+## Managing services
+
+There is no `status`, `stop`, `restart` or `logs` command. Use the Web UI (see
+[Web UI](./web-ui.md)) or the REST API. Mounted under `URL_PREFIX` when
+configured, and protected by `WEB_AUTH` credentials when enabled:
+
+| Action | Request |
+|--------|---------|
+| List services / status | `GET /api/services` |
+| Single service | `GET /api/services/<name>` |
+| Start / stop / restart | `POST /api/services/<name>/start\|stop\|restart` |
+| Log tail | `GET /api/services/<name>/logs?type=stdout\|stderr&lines=100` |
+| Clear log | `POST /api/services/<name>/logs/clear?type=stdout` |
+
+```sh
+curl -u admin:secret http://127.0.0.1:8080/api/services
+curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
+curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
+```
+
+With `URL_PREFIX = "/gorch"`, prepend the prefix (`/gorch/api/services`).
