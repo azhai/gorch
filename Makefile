@@ -85,12 +85,12 @@ WEB_FILES   := $(shell find $(WEB_DIR) -type f ! -name '.*')
 #   v9.0           — emits ARMv9 instructions (post-2021 cores only: Cortex-X2/
 #                    A710+, Neoverse N2/V2, AWS Graviton4, Apple M3 …).
 GOARM64   ?= v8.0
-# set COMPRESS=1 to additionally pack the `arm64` output with UPX (if installed)
-COMPRESS  ?= 0
+# `make release` additionally packs the Linux binaries with UPX (upx --brute),
+# writing gorch-<ver>-linux-<arch>.upx next to each plain one.
 
 # ── Targets ───────────────────────────────────────────────
 
-.PHONY: all assets odin-version deps one build release linux run test check clean
+.PHONY: all assets odin-version deps one build release upx-linux linux run test check clean
 
 ## deps: fetch the oboe submodule (needed before the first build)
 deps:
@@ -173,8 +173,26 @@ build: odin-version check-deps assets
 		else sha256sum $(APP)-$(VERSION)-*; fi > SHA256SUMS
 	@echo "✅ Build success."
 
-## release: build the matrix and print what it produced
-release: build
+## upx-linux: additionally pack the Linux release binaries with UPX --brute
+#
+# UPX decompresses transparently at load time, so a .upx file is a drop-in
+# replacement for the plain one - just smaller. The original is kept too.
+upx-linux:
+	@for f in $(BIN)/$(APP)-$(VERSION)-linux-*; do \
+		[ -f "$$f" ] || continue; \
+		if command -v upx >/dev/null 2>&1; then \
+			echo "UPX $$f ..."; \
+			upx --brute -o "$$f.upx" "$$f" || { echo "  upx failed on $$f, skipped" >&2; continue; }; \
+			printf "  %-46s %8s bytes\n" "$$f.upx" "$$(wc -c < $$f.upx | tr -d ' ')"; \
+		else \
+			echo "upx not found; skipping compression of $$f" >&2; \
+		fi; \
+	done
+
+## release: build the matrix, pack the Linux binaries, and print what it produced
+release: build upx-linux
+	@cd $(BIN) && if command -v shasum >/dev/null; then shasum -a 256 $(APP)-$(VERSION)-*; \
+		else sha256sum $(APP)-$(VERSION)-*; fi > SHA256SUMS
 	@echo
 	@cat $(BIN)/SHA256SUMS
 
