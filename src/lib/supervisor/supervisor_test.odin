@@ -1,5 +1,6 @@
 package supervisor
 
+import "core:net"
 import "core:os"
 import "core:strings"
 import "core:sys/posix"
@@ -77,6 +78,7 @@ new_test_config :: proc(name, exec_cmd, policy: string) -> ^config.Config {
 
 @(private = "file")
 free_test_config :: proc(cfg: ^config.Config) {
+	delete(cfg.topo_order)
 	delete(cfg.services)
 	free(cfg)
 }
@@ -366,6 +368,7 @@ test_add_and_remove_service :: proc(t: ^testing.T) {
 		shutdown(sv)
 		destroy(sv)
 		free(sv)
+		delete(cfg.topo_order)
 		delete(cfg.services)
 		free(cfg)
 	}
@@ -395,4 +398,159 @@ test_add_and_remove_service :: proc(t: ^testing.T) {
 	}
 	_, still := sv.services["added"]
 	testing.expect(t, !still, "removed service leaves the table")
+}
+
+// ---- ENV_VARS ----
+
+@(test)
+test_child_env_overlays_without_losing_parent :: proc(t: ^testing.T) {
+	vars := make(map[string]string)
+	defer delete(vars)
+	vars["GORCH_TEST_OVERLAY"] = "from-config"
+	vars["PATH"] = "/custom/bin"
+
+	env := child_env(vars)
+	defer child_env_destroy(&env)
+	view := child_env_view(&env)
+	testing.expect(t, view != nil, "a non-empty ENV_VARS must produce an env")
+
+	overlay_count, path_count := 0, 0
+	for entry in view {
+		switch env_key(entry) {
+		case "GORCH_TEST_OVERLAY":
+			overlay_count += 1
+			testing.expect_value(t, entry, "GORCH_TEST_OVERLAY=from-config")
+		case "PATH":
+			path_count += 1
+			testing.expect_value(t, entry, "PATH=/custom/bin")
+		}
+	}
+	testing.expect_value(t, overlay_count, 1)
+	// getenv() returns the *first* match, so appending a duplicate would
+	// silently keep the parent's value. The overridden key must appear once.
+	testing.expect_value(t, path_count, 1)
+
+	home, has_home := os.lookup_env_alloc("HOME", context.allocator)
+	if has_home {
+		delete(home)
+		found := false
+		for entry in view {
+			if env_key(entry) == "HOME" {
+				found = true
+			}
+		}
+		testing.expect(t, found, "unrelated inherited variables must survive")
+	}
+
+	empty := child_env(map[string]string{})
+	defer child_env_destroy(&empty)
+	testing.expect(t, child_env_view(&empty) == nil, "no ENV_VARS means inherit")
+}
+
+@(test)
+test_env_vars_reaches_the_child :: proc(t: ^testing.T) {
+	dir := "/tmp/gorch_sup_env"
+	_ = os.make_directory(dir)
+	defer _ = os.remove_all(dir)
+
+	cfg := new(config.Config)
+	defer free_test_config(cfg)
+	cfg.services = make(map[string]config.ServiceConfig)
+	vars := make(map[string]string)
+	defer delete(vars)
+	vars["GORCH_TEST_VAR"] = "hello-gorch"
+	cfg.services["t_env"] = config.ServiceConfig {
+		exec_cmd       = "printenv GORCH_TEST_VAR > /tmp/gorch_sup_env/value.txt",
+		work_dir       = "/tmp",
+		restart_policy = "never",
+		env_vars       = vars,
+	}
+
+	sv := new(Supervisor)
+	defer free(sv)
+	init(sv, cfg, "")
+	defer {
+		shutdown(sv)
+		destroy(sv)
+	}
+
+	start_all(sv)
+	for _ in 0 ..< 100 {
+		if os.exists("/tmp/gorch_sup_env/value.txt") {
+			break
+		}
+		time.sleep(20 * time.Millisecond)
+	}
+	data, err := os.read_entire_file_from_path("/tmp/gorch_sup_env/value.txt", context.allocator)
+	testing.expectf(t, err == nil, "the child must write its env: {}", err)
+	if err == nil {
+		testing.expect_value(t, strings.trim_space(string(data)), "hello-gorch")
+		delete(data)
+	}
+}
+
+// ---- DEPENDS_ON ----
+
+@(test)
+test_depends_on_orders_the_loop :: proc(t: ^testing.T) {
+	cfg := new(config.Config)
+	defer free_test_config(cfg)
+	cfg.services = make(map[string]config.ServiceConfig)
+	// Alphabetically a_api comes first, but it depends on z_db: an alphabetical
+	// sv.order would start the consumer before its dependency.
+	cfg.services["a_api"] = config.ServiceConfig {
+		exec_cmd   = "sleep 60",
+		work_dir   = "/tmp",
+		depends_on = []string{"z_db"},
+	}
+	cfg.services["z_db"] = config.ServiceConfig {
+		exec_cmd = "sleep 60",
+		work_dir = "/tmp",
+	}
+
+	sv := new(Supervisor)
+	defer free(sv)
+	init(sv, cfg, "")
+	defer destroy(sv)
+
+	testing.expect_value(t, len(sv.order), 2)
+	testing.expect_value(t, sv.order[0], "z_db")
+	testing.expect_value(t, sv.order[1], "a_api")
+	testing.expect_value(t, sv.cfg.topo_order[0], "z_db")
+
+	// Removing the dependency must re-sort the runtime table, not just cfg.
+	edited := cfg.services["a_api"]
+	edited.depends_on = nil
+	testing.expect_value(t, set_spec(sv, "a_api", edited), "")
+	testing.expect_value(t, sv.order[0], "a_api")
+	testing.expect_value(t, sv.cfg.topo_order[0], "a_api")
+}
+
+// ---- CHECK_PORT ----
+
+@(test)
+test_port_detection_finds_the_listener_owner :: proc(t: ^testing.T) {
+	port :: 18999
+	listener, err := net.listen_tcp(net.Endpoint{net.IP4_Loopback, port})
+	if err != nil {
+		return // port taken by an unrelated process on this machine
+	}
+	testing.expect(t, port_is_busy(port), "a live listener must be detected")
+
+	owners := port_owners(port)
+	defer delete(owners)
+	self := int(posix.getpid())
+	found := false
+	for pid in owners {
+		if pid == self {
+			found = true
+		}
+	}
+	testing.expectf(t, found, "port_owners must find the test process, got {}", owners)
+
+	// Do not assert that the port is free after close: odin runs tests in
+	// parallel and another case may have spawned a child while this listener
+	// was open, inheriting its fd and keeping the socket alive. That is a
+	// property of the test runner, not of the pre-flight check.
+	net.close(listener)
 }

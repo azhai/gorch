@@ -46,7 +46,7 @@ Config :: struct {
 	services_lock: string,
 	config_dir:   string,  // directory containing the config file
 	config_path:  string,  // path to the config file
-	topo_order:   []string,
+	topo_order:   [dynamic]string, // owned; rebuilt on every config edit
 }
 
 is_valid_restart_policy :: proc(p: string) -> bool {
@@ -318,6 +318,15 @@ expand_env_in_config :: proc(cfg: ^Config) -> string {
 		} else {
 			svc.pid_file = r
 		}
+		// ENV_VARS values are expanded against gorch's own environment, the
+		// same way Go's loader did. The keys are never expanded.
+		for k, v in svc.env_vars {
+			if r, e := expand_env(v); e != "" {
+				return fmt.tprintf("service {}: ENV_VARS[{}]: {}", name, k, e)
+			} else {
+				svc.env_vars[k] = r
+			}
+		}
 		cfg.services[name] = svc
 	}
 	return ""
@@ -340,9 +349,11 @@ validate_dependencies :: proc(cfg: ^Config) -> string {
 }
 
 // topological_sort returns services in dependency order (DFS, cycle detected).
-topological_sort :: proc(cfg: ^Config) -> ([]string, string) {
+// A dynamic array is returned rather than a slice so the caller can free the
+// backing array with its real capacity (see sorted_service_names).
+topological_sort :: proc(cfg: ^Config) -> ([dynamic]string, string) {
 	if e := validate_dependencies(cfg); e != "" {
-		return nil, e
+		return {}, e
 	}
 	state := make(map[string]int) // 0=unvisited,1=visiting,2=visited
 	defer delete(state)
@@ -352,10 +363,11 @@ topological_sort :: proc(cfg: ^Config) -> ([]string, string) {
 	defer delete(names)
 	for n in names {
 		if e := dfs_visit(n, cfg, &state, &order); e != "" {
-			return nil, e
+			delete(order)
+			return {}, e
 		}
 	}
-	return order[:], ""
+	return order, ""
 }
 
 dfs_visit :: proc(name: string, cfg: ^Config, state: ^map[string]int, order: ^[dynamic]string) -> string {

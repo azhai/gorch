@@ -50,13 +50,25 @@ validate_spec :: proc(cfg: ^config.Config, name: string, spec: config.ServiceCon
 	return ""
 }
 
-// rebuild_order recomputes the dependency order after the service map changed.
-// A cycle is rejected by the caller beforehand, so this only has to store the
-// result; on the impossible error the name order is kept.
+// rebuild_order applies the dependency order to the table the loop actually
+// walks. cfg.topo_order alone is inert: start_all, stop_all, tick and snapshot
+// all iterate sv.order, so recomputing only the config field used to change
+// nothing at runtime. The strings stored in sv.order are borrowed from each
+// Service's owned name, so clearing and refilling it is just a reorder.
 rebuild_order :: proc(sv: ^Supervisor) {
 	order, err := config.topological_sort(sv.cfg)
-	if err == "" {
-		sv.cfg.topo_order = order
+	if err != "" {
+		return // a cycle was rejected by the caller; keep the previous order
+	}
+	// The web layer reads cfg.topo_order to lay out the dashboard, so it has
+	// to follow edits too. Free the previous array before replacing it.
+	delete(sv.cfg.topo_order)
+	sv.cfg.topo_order = order
+	clear(&sv.order)
+	for name in order {
+		if s, ok := sv.services[name]; ok {
+			append(&sv.order, s.name)
+		}
 	}
 }
 
@@ -98,7 +110,8 @@ set_spec :: proc(sv: ^Supervisor, name: string, spec: config.ServiceConfig) -> s
 config_cycle_check :: proc(cfg: ^config.Config, name: string, spec: config.ServiceConfig) -> string {
 	prev, had := cfg.services[name]
 	cfg.services[name] = spec
-	_, err := config.topological_sort(cfg)
+	order, err := config.topological_sort(cfg)
+	delete(order)
 	if len(err) > 0 {
 		if had {
 			cfg.services[name] = prev
@@ -139,8 +152,6 @@ add_service :: proc(sv: ^Supervisor, name: string, spec: config.ServiceConfig) -
 	s.status = .Stopped
 	s.exits = make([dynamic]i64)
 	sv.services[s.name] = s
-	append(&sv.order, s.name)
-	config.insertion_sort_strings(sv.order[:])
 	sv.cfg.services[s.name] = spec
 	rebuild_order(sv)
 	register_cron(sv, s)
@@ -184,14 +195,9 @@ remove_service :: proc(sv: ^Supervisor, name: string) -> string {
 	if _, exists := sv.cfg.services[name]; exists {
 		delete_key(&sv.cfg.services, name)
 	}
+	// rebuild_order drops the name from sv.order now that it is out of the
+	// config. The Service row itself stays until its child is reaped.
 	rebuild_order(sv)
-
-	for n, i in sv.order {
-		if n == name {
-			ordered_remove(&sv.order, i)
-			break
-		}
-	}
 
 	if s.pid == 0 && s.cron_pid == 0 {
 		destroy_service_locked(sv, s)

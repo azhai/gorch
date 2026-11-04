@@ -22,21 +22,18 @@ Use `-c /path/to/config.toml` to point at a specific file.
 ### Compatibility Fields (Not Applied)
 
 The Odin rewrite kept these keys so existing `gorch.toml` files and the Web
-config editor still load and round-trip them, but no runtime code consumes them
-yet:
+config editor still load and round-trip them, but no runtime code consumes them:
 
 | Field | What the Go version did | In the Odin build |
 |-------|-------------------------|-------------------|
 | `PID_FILE` (global) | supervisor PID file | nothing is written |
 | `SERVICES_LOCK` | pid list for adopting processes across restarts | nothing is written; state lives in the oboe cache snapshot `gorch.state` |
 | `PID_FILE` (service) | daemon PID file used to find the real master | not read when spawning |
-| `CHECK_PORT` | kill whatever holds a TCP port before start | validated (0–65535) but never checked |
-| `ENV_VARS` | extra environment for the child | not passed; the child inherits gorch's own environment |
 
-`DEPENDS_ON` is partially wired: unknown names, self-dependencies and cycles
-are rejected at load time, but startup walks services in **alphabetical name
-order**, not dependency order. If ordering matters, encode it in `PRE_ACTION`
-or in the command itself.
+`CHECK_PORT`, `ENV_VARS` and `DEPENDS_ON` are fully implemented — see
+[Dependency Order](#dependency-order-depends_on),
+[Port Pre-flight](#port-pre-flight-check_port) and
+[Child Environment](#child-environment-env_vars) below.
 
 ### Log Rotation
 
@@ -78,22 +75,83 @@ Non-regular targets such as `/dev/null` or a named pipe are never rotated.
 | `RESTART_POLICY` | No | `never` | `always` / `on-failure` / `never` |
 | `BACK_OFF` | No | `0` (falls back to `5`) | Seconds to wait before a restart attempt |
 | `PRE_ACTION` | No | — | Shell command run via `/bin/sh -c` before start; 15 s timeout, failure only warns |
-| `CHECK_PORT` | No | `0` | Validated but not applied — see Compatibility Fields |
+| `CHECK_PORT` | No | `0` (off) | Before each start, clear foreign listeners on this TCP port — see Port Pre-flight |
 | `PID_FILE` | No | — | Compatibility field, not applied |
 | `STDOUT` | No | `LOG_DIR/<name>.out.log` | Stdout log file path |
 | `STDERR` | No | `LOG_DIR/<name>.err.log` | Stderr log file path |
-| `DEPENDS_ON` | No | `[]` | Validated (unknown names / self / cycles), but does not order startup |
+| `DEPENDS_ON` | No | `[]` | Services that must start first; controls boot and stop order — see Dependency Order |
 | `CRON` | No | — | 5- or 6-field cron expression; see Cron Expressions |
 | `CRON_TIMEOUT` | No | `0` (off) | Seconds; a cron run still alive after this long is killed with SIGKILL |
-| `ENV_VARS` | No | `{}` | Compatibility field, not applied |
+| `ENV_VARS` | No | `{}` | Extra environment for the child, overlaid on gorch's own; values support `${VAR}` |
 
 ### Startup Sequence
 
 When a service starts (or restarts), gorch runs the following steps in order:
 
-1. **PRE_ACTION** — if set, run via `/bin/sh -c` in `WORK_DIR` with a 15 s timeout. A failure is logged but does not block startup.
-2. **Log files** — `STDOUT` / `STDERR` are opened in append mode and handed to the child as its file descriptors.
-3. **EXEC_CMD** — launched with `/bin/sh -c`. A plain command (no shell metacharacters) is prefixed with `exec`, so the pid gorch tracks is the service itself; commands are capped at 1024 bytes.
+1. **PRE_ACTION** — if set, run via `/bin/sh -c` in `WORK_DIR` with `ENV_VARS` applied and a 15 s timeout. A failure is logged but does not block startup.
+2. **CHECK_PORT** — if set and the port is occupied, kill foreign listeners on it.
+3. **Log files** — `STDOUT` / `STDERR` are opened in append mode and handed to the child as its file descriptors.
+4. **EXEC_CMD** — launched with `/bin/sh -c` and `ENV_VARS` applied. A plain command (no shell metacharacters) is prefixed with `exec`, so the pid gorch tracks is the service itself; commands are capped at 1024 bytes.
+
+`RESTART_CMD` and one-shot `CRON` runs also receive `ENV_VARS`; a cron run
+performs the same CHECK_PORT pre-flight before it starts.
+
+### Dependency Order (DEPENDS_ON)
+
+```toml
+[services.api]
+EXEC_CMD = "./api"
+DEPENDS_ON = ["db"]
+
+[services.db]
+EXEC_CMD = "postgres -D /var/lib/pg"
+```
+
+`DEPENDS_ON` controls the order in which gorch walks services: at boot a
+service starts after all of its dependencies, and at shutdown it stops
+**before** them (reverse order). The Web dashboard lists services in the same
+order. Unknown names, self-dependencies and cycles are rejected when the
+config loads or is edited.
+
+This is **ordering only**, not readiness or cascading control: gorch does not
+wait for a dependency to finish binding its port, does not pull dependencies
+up when you start one service manually, and does not stop dependents when you
+stop one. If a service must wait until its dependency is actually ready, do
+that in `PRE_ACTION` or in the command itself.
+
+### Port Pre-flight (CHECK_PORT)
+
+Some daemons fork a master and outlive gorch, leaving a stale listener bound
+to their port. `CHECK_PORT = 8080` clears that listener before each start:
+
+1. gorch tries to `bind()` the port on both IPv4 and IPv6. If it is free (the
+   usual case) nothing else happens.
+2. If it is occupied, the owning pids are located — Linux reads
+   `/proc/net/tcp{,6}` and `/proc/<pid>/fd` (no external tools), macOS uses
+   the system `lsof -nP -ti :<port> -sTCP:LISTEN`.
+3. Foreign listeners are sent `SIGKILL`, then gorch waits up to 200 ms for
+   the port to be released before spawning the child.
+
+gorch never signals itself, pid 1, or any process it currently manages, so a
+misconfigured port cannot kill a dependency. Only **listening** sockets count:
+clients with an established connection to that port are left alone. If the
+owner cannot be identified, a warning is logged and startup proceeds anyway.
+Valid range is 1–65535; `0` disables the check.
+
+### Child Environment (ENV_VARS)
+
+```toml
+[services.api]
+EXEC_CMD = "./api"
+ENV_VARS = { APP_ENV = "production", DSN = "postgres://${DB_HOST}/app", PATH = "/opt/bin:${PATH}" }
+```
+
+The child inherits gorch's full environment with these keys overlaid: an
+existing key is **replaced**, not duplicated (appending a duplicate would be
+ignored by `getenv`, which returns the first match). Values are expanded at
+load time against gorch's own environment, so `${DB_HOST}` above must be set
+when gorch starts. The same environment is used by `PRE_ACTION`,
+`RESTART_CMD`, `EXEC_CMD` and one-shot cron runs.
 
 ### Graceful Reload via RESTART_CMD
 
@@ -109,11 +167,11 @@ a forked master by executable name or PPID=1; that belonged to the Go version.
 
 ## Environment Variable Expansion
 
-`${VAR}` is expanded at load time, but only in these service fields:
-`EXEC_CMD`, `WORK_DIR`, `RESTART_CMD`, `PRE_ACTION`, `STDOUT`, `STDERR` and
-`PID_FILE`. An unset variable is a **config error** (gorch refuses to start),
-not an empty string. Other fields, including values inside `ENV_VARS`, are not
-expanded.
+`${VAR}` is expanded at load time in these service fields:
+`EXEC_CMD`, `WORK_DIR`, `RESTART_CMD`, `PRE_ACTION`, `STDOUT`, `STDERR`,
+`PID_FILE` **and the values inside `ENV_VARS`** (keys are not expanded). An
+unset variable is a **config error** (gorch refuses to start), not an empty
+string.
 
 ```toml
 [services.app]
@@ -174,6 +232,9 @@ EXEC_CMD = "python manage.py runserver 0.0.0.0:8000"
 WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
+DEPENDS_ON = ["redis"]             # redis starts first, stops last
+CHECK_PORT = 8000                  # clear a stale listener before start
+ENV_VARS = { DJANGO_SETTINGS_MODULE = "prod", PYTHONUNBUFFERED = "1" }
 STDOUT = "/tmp/gorch/logs/api.stdout.log"
 STDERR = "/tmp/gorch/logs/api.stderr.log"
 
@@ -210,6 +271,8 @@ STDERR = '/tmp/gorch/logs/angie.err.log'
 ```
 
 **Why PID doesn't change on restart** — When `RESTART_CMD` is set, a restart runs the reload command (e.g. `nginx -s reload`) instead of stop+start. The master process never exits, so its PID stays the same. Workers are replaced gracefully without dropping connections.
+
+**Safer than the `PRE_ACTION` above** — `CHECK_PORT = 8080` clears only the process actually listening on that port, instead of `kill -9`-ing every process whose command line contains `angie`. It also protects gorch's own services from being signalled.
 
 ### Redis (Homebrew on macOS)
 

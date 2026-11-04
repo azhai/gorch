@@ -138,6 +138,9 @@ init :: proc(sv: ^Supervisor, cfg: ^config.Config, state_path: string) -> string
 		append(&sv.order, s.name)
 		register_cron(sv, s)
 	}
+	// The loop walks sv.order, not cfg.topo_order, so the dependency order has
+	// to be applied here (and re-applied by every config edit).
+	rebuild_order(sv)
 
 	if len(state_path) > 0 {
 		store, loaded := state.open(state_path)
@@ -232,8 +235,13 @@ stop_all :: proc(sv: ^Supervisor) {
 	sync.rw_mutex_lock(&sv.mu)
 	defer sync.rw_mutex_unlock(&sv.mu)
 	now := now_seconds(sv)
-	for name in sv.order {
-		s := sv.services[name]
+	// Reverse dependency order: a consumer stops before the service it uses,
+	// the mirror image of start_all walking sv.order forwards.
+	for i := len(sv.order) - 1; i >= 0; i -= 1 {
+		s, ok := sv.services[sv.order[i]]
+		if !ok {
+			continue
+		}
 		s.want_running = false
 		if s.pid > 0 {
 			signal(s.pid, .SIGTERM)
@@ -327,8 +335,10 @@ restart :: proc(sv: ^Supervisor, name: string) -> string {
 	if s.spec.restart_cmd != "" && s.pid > 0 {
 		cmd := s.spec.restart_cmd
 		dir := s.spec.work_dir
+		env := child_env(s.spec.env_vars)
 		sync.rw_mutex_unlock(&sv.mu)
-		if !run_shell(cmd, dir, 15 * time.Second) {
+		defer child_env_destroy(&env)
+		if !run_shell(cmd, dir, 15 * time.Second, child_env_view(&env)) {
 			return fmt.tprintf("reload command failed for {}", name)
 		}
 		return ""
@@ -565,11 +575,15 @@ spawn_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> bool {
 		glog.error("service has no EXEC_CMD", "service", s.name)
 		return false
 	}
+	env := child_env(s.spec.env_vars)
+	defer child_env_destroy(&env)
 	if s.spec.pre_action != "" {
-		if !run_shell(s.spec.pre_action, s.spec.work_dir, 15 * time.Second) {
+		if !run_shell(s.spec.pre_action, s.spec.work_dir, 15 * time.Second, child_env_view(&env)) {
 			glog.warn("PRE_ACTION failed, starting anyway", "service", s.name)
 		}
 	}
+	// CHECK_PORT clears a stale listener before the child tries to bind it.
+	clear_check_port(sv, s)
 
 	// Both files must stay open until the child has been spawned. `defer` here
 	// would run at the end of the `if` block, closing the fd before fork/exec hands
@@ -601,6 +615,7 @@ spawn_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> bool {
 	desc := os.Process_Desc {
 		working_dir = s.spec.work_dir,
 		command     = []string{"/bin/sh", "-c", command},
+		env         = child_env_view(&env),
 		stdout      = stdout_file,
 		stderr      = stderr_file,
 	}

@@ -108,6 +108,11 @@ cron_start_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> (string, in
 	if len(s.spec.exec_cmd) == 0 {
 		return "service has no EXEC_CMD", 0
 	}
+	env := child_env(s.spec.env_vars)
+	defer child_env_destroy(&env)
+	// A cron run gets the same CHECK_PORT pre-flight as a daemon, so a job
+	// that binds a port is not blocked by a stale listener either.
+	clear_check_port(sv, s)
 
 	stdout_file, stderr_file: ^os.File
 	if len(s.spec.stdout) > 0 {
@@ -136,6 +141,7 @@ cron_start_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> (string, in
 	desc := os.Process_Desc {
 		working_dir = s.spec.work_dir,
 		command     = []string{"/bin/sh", "-c", command},
+		env         = child_env_view(&env),
 		stdout      = stdout_file,
 		stderr      = stderr_file,
 	}
