@@ -207,18 +207,6 @@ STDOUT = '/tmp/gorch/logs/myapp.out.log'
 STDERR = '/tmp/gorch/logs/myapp.err.log'
 ```
 
-### Static File Server (weblite)
-
-```toml
-[services.mine_world]
-EXEC_CMD = '/opt/wares/gorch/weblite -p 2100'
-WORK_DIR = '/opt/repos/mine_world'
-RESTART_POLICY = 'on-failure'
-BACK_OFF = 8
-STDOUT = '/tmp/gorch/logs/mine_world.out.log'
-STDERR = '/tmp/gorch/logs/mine_world.err.log'
-```
-
 ### Godoc
 
 ```toml

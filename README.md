@@ -21,16 +21,11 @@ gorch is great for web apps, API servers, cron jobs, and stateless daemons. It i
 
 - **Traditional databases** (MySQL, PostgreSQL, etc.) — Frequent restarts can lead to data inconsistency or corruption. Use the database's own management tools instead.
 
-## Binaries
+## Binary
 
-Two binaries are built from this repo:
+One binary is built from this repo: **`gorch`** — a process supervisor that manages long-running services and cron jobs, with a built-in Web UI and REST API.
 
-| Binary | What it does |
-|--------|-------------|
-| **gorch** | Process supervisor — manages long-running services and cron jobs, with a built-in Web UI and REST API |
-| **weblite** | Lightweight static file server — serves a directory with directory listing, zero config |
-
-Both are written in Odin. The Web UI is embedded into the `gorch` binary as gzip-compressed assets, so a single file is all you deploy; a `web/` directory next to the config still wins over the embedded copy.
+It is written in Odin. The Web UI is embedded as compressed assets, so a single file is all you deploy; a `web/` directory next to the config still wins over the embedded copy file by file.
 
 ## Install
 
@@ -163,14 +158,6 @@ Features:
 - Log viewer (stdout / stderr)
 - Config editor with two-step save
 - Cron validation
-
-### 7. Serve static files with weblite
-
-```sh
-weblite -d ./public -p 8000
-```
-
-Serves the `./public` directory on port 8000 with auto-generated directory listings.
 
 ## Runtime Files
 
