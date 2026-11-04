@@ -9,6 +9,7 @@ import {
 } from '../api.js'
 import { formatDuration, formatStartTime } from '../format.js'
 import { i18n } from '../i18n.js'
+import { selectFromQuery } from '../router.js'
 
 const RESTART_POLICIES = ['always', 'on-failure', 'never']
 
@@ -144,6 +145,11 @@ export function configView() {
 
     get bannerClass() {
       return BANNER_CLASS[this.messageType]
+    },
+
+    /** Opened from a dashboard card: /config?service=<name> pre-selects it. */
+    init() {
+      selectFromQuery(this, (name) => this.pickService(name))
     },
 
     /** Existing services except this one, offered as dependency chips. */

@@ -84,7 +84,15 @@
                         <div class="md-service-card__head">
                           <div class="md-service-card__name">
                             <span :class="`md-status-dot ${statusClass(svc.status)}`"></span>
-                            <h3 x-text="svc.name"></h3>
+                            <h3>
+                              <a
+                                class="md-service-card__link"
+                                :href="hrefOf(configPath(svc.name))"
+                                @click.prevent="go(configPath(svc.name))"
+                                :title="t('dashboard.openConfig')"
+                                x-text="svc.name"
+                              ></a>
+                            </h3>
                           </div>
                           <span class="md-chip" x-text="statusLabel(svc)"></span>
                         </div>
@@ -104,33 +112,44 @@
                           </div>
                         </div>
 
-                        <div class="md-row md-row--tight">
-                          <template x-if="svc.status !== 'running'">
+                        <!-- Controls on the left, the jump to the log page on the
+                             right, so every card has the same second entry point. -->
+                        <div class="md-row md-row--between md-row--tight">
+                          <div class="md-row md-row--tight">
+                            <template x-if="svc.status !== 'running'">
+                              <button
+                                class="md-btn md-btn--tonal md-btn--sm"
+                                :disabled="isPending(svc.name)"
+                                @click="act('start', svc.name)"
+                                x-text="t('service.start')"
+                              ></button>
+                            </template>
+                            <template x-if="svc.status === 'running'">
+                              <button
+                                class="md-btn md-btn--danger md-btn--sm"
+                                :disabled="isPending(svc.name)"
+                                @click="act('stop', svc.name)"
+                              >
+                                <template x-if="isPending(svc.name)"><span class="md-spinner"></span></template>
+                                <span x-text="t('service.stop')"></span>
+                              </button>
+                            </template>
                             <button
-                              class="md-btn md-btn--tonal md-btn--sm"
+                              class="md-btn md-btn--outlined md-btn--sm"
                               :disabled="isPending(svc.name)"
-                              @click="act('start', svc.name)"
-                              x-text="t('service.start')"
-                            ></button>
-                          </template>
-                          <template x-if="svc.status === 'running'">
-                            <button
-                              class="md-btn md-btn--danger md-btn--sm"
-                              :disabled="isPending(svc.name)"
-                              @click="act('stop', svc.name)"
+                              @click="act('restart', svc.name)"
                             >
                               <template x-if="isPending(svc.name)"><span class="md-spinner"></span></template>
-                              <span x-text="t('service.stop')"></span>
+                              <span x-text="t('service.restart')"></span>
                             </button>
-                          </template>
-                          <button
-                            class="md-btn md-btn--outlined md-btn--sm"
-                            :disabled="isPending(svc.name)"
-                            @click="act('restart', svc.name)"
-                          >
-                            <template x-if="isPending(svc.name)"><span class="md-spinner"></span></template>
-                            <span x-text="t('service.restart')"></span>
-                          </button>
+                          </div>
+
+                          <a
+                            class="md-service-card__logs"
+                            :href="hrefOf(logsPath(svc.name))"
+                            @click.prevent="go(logsPath(svc.name))"
+                            x-text="t('dashboard.logs')"
+                          ></a>
                         </div>
                       </div>
                     </template>

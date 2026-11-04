@@ -30,6 +30,15 @@ export function dashboardView() {
       return this.$data.t(`service.status.${service.status}`, service.status)
     },
 
+    /** Card links carry the service in the query so the target page can select it. */
+    configPath(name) {
+      return `/config?service=${encodeURIComponent(name)}`
+    },
+
+    logsPath(name) {
+      return `/logs?service=${encodeURIComponent(name)}`
+    },
+
     async act(action, name) {
       this.pending[name] = true
       try {

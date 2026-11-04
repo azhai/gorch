@@ -1,5 +1,6 @@
 import { clearLogs, fetchLogs } from '../api.js'
 import { i18n } from '../i18n.js'
+import { selectFromQuery } from '../router.js'
 
 const LOG_TYPES = ['stdout', 'stderr']
 
@@ -11,6 +12,11 @@ export function logsView() {
     logData: null,
     clearing: false,
     error: null,
+
+    /** Opened from a dashboard card: /logs?service=<name> pre-selects it. */
+    init() {
+      selectFromQuery(this, (name) => this.pick(name))
+    },
 
     get lines() {
       return this.logData ? this.logData.lines : []

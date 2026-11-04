@@ -634,6 +634,39 @@ a {
   gap: 8px;
 }
 
+/* The name is the way into that service's config page, so it is underlined
+   rather than relying on colour alone to read as a link. */
+.md-service-card__link {
+  color: var(--md-on-surface);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--md-primary);
+}
+
+.md-service-card__link:hover,
+.md-service-card__link:focus-visible {
+  color: var(--md-primary);
+  text-decoration-color: currentColor;
+}
+
+/* The log page is the card's secondary entry point: bottom right, quiet. */
+.md-service-card__logs {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--md-primary);
+}
+
+.md-service-card__logs:hover,
+.md-service-card__logs:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .md-status-dot {
   width: 10px;
   height: 10px;
