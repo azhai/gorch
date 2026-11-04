@@ -1,65 +1,44 @@
 package web
 
-// Compile-time copy of web/ so an installed or relocated binary still serves the
-// SPA. The disk directory wins when present, which keeps frontend edits live.
+// Compile-time copy of web/, compressed.
 //
-// #load_directory is NOT recursive, so every sub-directory under web/ is listed
-// explicitly. Adding a directory there means adding one line here - otherwise
-// its files silently fall back to index.html.
+// The SPA is about 236 KB of HTML, JS and CSS. Dropped into the binary as-is
+// that is a sixth of the executable; gzipped it is 50 KB, so `make assets`
+// compresses web/ into assets.bin and writes the table that indexes it. The
+// blob is expanded once, when the server starts without a web/ directory, and
+// the result lives for the rest of the process - it is the asset, not a copy
+// of one, so it is never freed.
+//
+// A web/ directory next to the binary or the config still wins over this copy,
+// which keeps frontend edits live without rebuilding.
 
+import "core:bytes"
+import "core:compress/zlib"
 import "core:fmt"
 
-@(private)
-E_ROOT := #load_directory("../../../web")
-@(private)
-E_CSS := #load_directory("../../../web/css")
-@(private)
-E_JS := #load_directory("../../../web/js")
-@(private)
-E_VIEWS := #load_directory("../../../web/js/views")
-@(private)
-E_VENDOR := #load_directory("../../../web/vendor")
-
 // embedded_assets keys assets by request path, e.g. "/js/views/config.js".
-@(private)
 embedded_assets :: proc() -> map[string][]byte {
-	assets := make(map[string][]byte)
-	for f in E_ROOT {
-		if skip_name(f.name) {
-			continue
-		}
-		assets[fmt.tprintf("/{}", f.name)] = f.data
+	buf: bytes.Buffer
+	bytes.buffer_init_allocator(&buf, 0, ASSET_SIZE, context.allocator)
+	err := zlib.inflate_from_byte_array(
+		ASSET_BLOB,
+		&buf,
+		raw = true,
+		expected_output_size = ASSET_SIZE,
+	)
+	if err != nil {
+		// A damaged blob is a build error, not a runtime one: say so once and
+		// let the caller serve nothing rather than crashing on a nil map.
+		fmt.eprintfln("embedded frontend is damaged: {}", err)
+		bytes.buffer_destroy(&buf)
+		return {}
 	}
-	for f in E_CSS {
-		if skip_name(f.name) {
-			continue
-		}
-		assets[fmt.tprintf("/css/{}", f.name)] = f.data
-	}
-	for f in E_JS {
-		if skip_name(f.name) {
-			continue
-		}
-		assets[fmt.tprintf("/js/{}", f.name)] = f.data
-	}
-	for f in E_VIEWS {
-		if skip_name(f.name) {
-			continue
-		}
-		assets[fmt.tprintf("/js/views/{}", f.name)] = f.data
-	}
-	for f in E_VENDOR {
-		if skip_name(f.name) {
-			continue
-		}
-		assets[fmt.tprintf("/vendor/{}", f.name)] = f.data
+	// The buffer is not destroyed: the map holds slices into it, and those
+	// slices are the assets for as long as the process runs.
+	all := bytes.buffer_to_bytes(&buf)
+	assets := make(map[string][]byte, len(ASSETS))
+	for entry in ASSETS {
+		assets[entry.path] = all[entry.offset:][:entry.size]
 	}
 	return assets
-}
-
-// skip_name drops empty names and dotfiles such as the .DS_Store that macOS
-// leaves in every directory.
-@(private)
-skip_name :: proc(name: string) -> bool {
-	return len(name) == 0 || name[0] == '.'
 }

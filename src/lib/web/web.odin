@@ -15,6 +15,7 @@ import "core:thread"
 import "core:time"
 
 import "../../lib/config"
+import "../../lib/json"
 import "../../lib/jwt"
 import glog "../../lib/log"
 import "../../lib/logfile"
@@ -814,18 +815,7 @@ status_text :: proc(code: int) -> string {
 // ---- small parsers ----
 
 write_json_string :: proc(b: ^strings.Builder, s: string) {
-	strings.write_byte(b, '"')
-	for i in 0 ..< len(s) {
-		switch s[i] {
-		case '"':  strings.write_string(b, "\\\"")
-		case '\\': strings.write_string(b, "\\\\")
-		case '\n': strings.write_string(b, "\\n")
-		case '\r': strings.write_string(b, "\\r")
-		case '\t': strings.write_string(b, "\\t")
-		case:      strings.write_byte(b, s[i])
-		}
-	}
-	strings.write_byte(b, '"')
+	json.write_string(b, s)
 }
 
 normalize_prefix :: proc(p: string) -> string {

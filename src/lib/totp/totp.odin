@@ -12,7 +12,6 @@ import "core:crypto/hmac"
 import "core:crypto/hash"
 import "core:encoding/base64"
 import "core:encoding/hex"
-import "core:encoding/json"
 
 // bstr returns an owned copy of a byte slice reinterpreted as a string.
 bstr :: proc(b: []byte) -> string {
@@ -421,27 +420,16 @@ load_db :: proc(path: string) -> DB {
 		return empty_db()
 	}
 	defer delete(data)
-	db: DB
-	if e := json.unmarshal(data, &db); e != nil {
-		return empty_db()
+	// An unreadable file is treated as no file at all: the alternative is
+	// refusing to start, which would lock the operator out of the dashboard.
+	if db, ok := decode_db(data); ok {
+		return db
 	}
-	if db.bindings == nil {
-		db.bindings = make(map[string]Binding)
-	}
-	if db.backups == nil {
-		db.backups = make(map[string][]BackupCode)
-	}
-	if db.used == nil {
-		db.used = make(map[string][]UsedCode)
-	}
-	return db
+	return empty_db()
 }
 
 save_db :: proc(t: ^TOTP) -> bool {
-	blob, e := json.marshal(t.db)
-	if e != nil {
-		return false
-	}
+	blob := encode_db(t.db)
 	defer delete(blob)
 	perm := os.Permissions{.Read_User, .Write_User}
 	if os.write_entire_file_from_bytes(t.path, blob, perm) != nil {

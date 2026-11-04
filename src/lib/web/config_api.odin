@@ -3,12 +3,11 @@ package web
 // The config page's API.
 //
 // The SPA posts the form back with the TOML names as JSON keys, so a service
-// config is mirrored into `Config_Body` with explicit json tags rather than
-// being renamed somewhere in the UI. Anything the daemon cannot honour is
-// rejected here with the message the form shows in its banner.
+// config is mirrored into `Config_Body` with the same names. Anything the
+// daemon cannot honour is rejected here with the message the form shows in its
+// banner. The JSON itself is read and written by json_body.odin.
 
 import "base:runtime"
-import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:strings"
@@ -17,25 +16,25 @@ import "../../lib/config"
 import "../../lib/cron"
 
 Config_Body :: struct {
-	WORK_DIR:       string            `json:"WORK_DIR"`,
-	EXEC_CMD:       string            `json:"EXEC_CMD"`,
-	RESTART_CMD:    string            `json:"RESTART_CMD"`,
-	RESTART_POLICY: string            `json:"RESTART_POLICY"`,
-	BACK_OFF:       int               `json:"BACK_OFF"`,
-	CHECK_PORT:     int               `json:"CHECK_PORT"`,
-	PRE_ACTION:     string            `json:"PRE_ACTION"`,
-	STDOUT:         string            `json:"STDOUT"`,
-	STDERR:         string            `json:"STDERR"`,
-	DEPENDS_ON:     []string          `json:"DEPENDS_ON"`,
-	CRON:           string            `json:"CRON"`,
-	CRON_TIMEOUT:   int               `json:"CRON_TIMEOUT"`,
-	ENV_VARS:       map[string]string `json:"ENV_VARS"`,
-	PID_FILE:       string            `json:"PID_FILE"`,
+	WORK_DIR:       string,
+	EXEC_CMD:       string,
+	RESTART_CMD:    string,
+	RESTART_POLICY: string,
+	BACK_OFF:       int,
+	CHECK_PORT:     int,
+	PRE_ACTION:     string,
+	STDOUT:         string,
+	STDERR:         string,
+	DEPENDS_ON:     []string,
+	CRON:           string,
+	CRON_TIMEOUT:   int,
+	ENV_VARS:       map[string]string,
+	PID_FILE:       string,
 }
 
 Create_Body :: struct {
-	name: string      `json:"name"`,
-	svc:  Config_Body `json:"svc"`,
+	name: string,
+	svc:  Config_Body,
 }
 
 body_of :: proc(spec: config.ServiceConfig) -> Config_Body {
@@ -90,12 +89,9 @@ request_body :: proc(raw: string) -> string {
 }
 
 send_body :: proc(conn: net.TCP_Socket, code: int, b: Config_Body) {
-	data, err := json.marshal(b, {}, context.temp_allocator)
-	if err != nil {
-		send_json_error(conn, 500, fmt.tprintf("cannot encode config: {}", err))
-		return
-	}
-	send_json_ok(conn, code, string(data))
+	buf := strings.builder_make()
+	write_config_body(&buf, b)
+	send_json_ok(conn, code, strings.to_string(buf))
 }
 
 // ---- handlers ----
@@ -115,9 +111,12 @@ handle_service_config :: proc(
 		send_body(conn, 200, body_of(spec))
 
 	case "PUT":
-		body: Config_Body
-		if err := json.unmarshal_string(request_body(raw), &body, {}, runtime.default_allocator()); err != nil {
-			send_json_error(conn, 400, fmt.tprintf("invalid JSON: {}", err))
+		// The parsed strings land in the service table, which outlives the
+		// request, so they are allocated with the default allocator and not
+		// from the connection arena.
+		body, perr := json_parse_config(request_body(raw), runtime.default_allocator())
+		if len(perr) > 0 {
+			send_json_error(conn, 400, fmt.tprintf("invalid JSON: {}", perr))
 			return
 		}
 		if _, ok := current_spec(srv, name); !ok {
@@ -145,9 +144,9 @@ handle_service_config :: proc(
 }
 
 handle_create_service :: proc(srv: ^Server, conn: net.TCP_Socket, raw: string) {
-	body: Create_Body
-	if err := json.unmarshal_string(request_body(raw), &body, {}, runtime.default_allocator()); err != nil {
-		send_json_error(conn, 400, fmt.tprintf("invalid JSON: {}", err))
+	body, perr := json_parse_create(request_body(raw), runtime.default_allocator())
+	if len(perr) > 0 {
+		send_json_error(conn, 400, fmt.tprintf("invalid JSON: {}", perr))
 		return
 	}
 	name := strings.trim_space(body.name)
@@ -188,18 +187,16 @@ handle_save_config :: proc(srv: ^Server, conn: net.TCP_Socket) {
 }
 
 handle_cron_validate :: proc(srv: ^Server, conn: net.TCP_Socket, raw: string) {
-	body: struct {
-		expression: string `json:"expression"`,
-	}
-	if err := json.unmarshal_string(request_body(raw), &body, {}, runtime.default_allocator()); err != nil {
-		send_json_error(conn, 400, fmt.tprintf("invalid JSON: {}", err))
+	expression, perr := json_parse_expression(request_body(raw))
+	if len(perr) > 0 {
+		send_json_error(conn, 400, fmt.tprintf("invalid JSON: {}", perr))
 		return
 	}
 	if srv.provider.validate_cron == nil {
 		send_json_error(conn, 503, "supervisor is not running")
 		return
 	}
-	check := srv.provider.validate_cron(srv.provider.user, body.expression)
+	check := srv.provider.validate_cron(srv.provider.user, expression)
 	defer delete(check.next)
 	b := strings.builder_make()
 	fmt.sbprintf(&b, `{{"valid":{}`, check.valid)
