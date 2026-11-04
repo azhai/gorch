@@ -2,17 +2,41 @@
 
 ## File Format
 
-TOML format. Default path: `gorch.toml` in the current directory.
+TOML. Without `-c` the config is looked up in this order:
 
-Use `-c /path/to/config.toml` to specify a different path.
+1. `$GORCH_CONFIG`
+2. `./gorch.toml`
+3. `~/.config/gorch/gorch.toml`
+4. `/etc/gorch/gorch.toml`
+
+Use `-c /path/to/config.toml` to point at a specific file.
 
 ## Global Fields
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `LOG_DIR` | `/tmp/gorch/logs` | Default log directory; services without explicit `STDOUT`/`STDERR` will use `<LOG_DIR>/<name>.out.log` and `<LOG_DIR>/<name>.err.log` |
-| `PID_FILE` | `/tmp/gorch/gorch.pid` | Supervisor PID file |
-| `SERVICES_LOCK` | `/tmp/gorch/gorch-services.lock` | Records managed service PIDs so a restart can adopt running processes |
+| `LOG_DIR` | `/tmp/gorch/logs` | Default log directory; services without explicit `STDOUT`/`STDERR` use `<LOG_DIR>/<name>.out.log` and `<LOG_DIR>/<name>.err.log` |
+| `PID_FILE` | `/tmp/gorch/gorch.pid` | Compatibility field — parsed and saved back, but no PID file is written |
+| `SERVICES_LOCK` | `/tmp/gorch/gorch-services.lock` | Compatibility field — parsed and saved back, but no lock file is written |
+
+### Compatibility Fields (Not Applied)
+
+The Odin rewrite kept these keys so existing `gorch.toml` files and the Web
+config editor still load and round-trip them, but no runtime code consumes them
+yet:
+
+| Field | What the Go version did | In the Odin build |
+|-------|-------------------------|-------------------|
+| `PID_FILE` (global) | supervisor PID file | nothing is written |
+| `SERVICES_LOCK` | pid list for adopting processes across restarts | nothing is written; state lives in the oboe cache snapshot `gorch.state` |
+| `PID_FILE` (service) | daemon PID file used to find the real master | not read when spawning |
+| `CHECK_PORT` | kill whatever holds a TCP port before start | validated (0–65535) but never checked |
+| `ENV_VARS` | extra environment for the child | not passed; the child inherits gorch's own environment |
+
+`DEPENDS_ON` is partially wired: unknown names, self-dependencies and cycles
+are rejected at load time, but startup walks services in **alphabetical name
+order**, not dependency order. If ordering matters, encode it in `PRE_ACTION`
+or in the command itself.
 
 ### Log Rotation
 
@@ -41,46 +65,55 @@ Non-regular targets such as `/dev/null` or a named pipe are never rotated.
 | `WEB_PASS` | — | Login password |
 | `URL_PREFIX` | `""` | Sub-path mount (e.g. `"/gorch"`). No rebuild needed — injected at runtime. |
 | `TOTP_ENABLE` | `false` | Enable TOTP two-factor authentication |
-| `TOTP_SECRET` | — | 32-byte hex-encoded master key (64 chars). Generate with `openssl rand -hex 32` |
-| `TOTP_DB` | `auth_totp.db` | SQLite database path for TOTP data |
+| `TOTP_SECRET` | — | 32-byte master key as 64 hex characters (`openssl rand -hex 32`); without it the second factor stays off |
+| `TOTP_DB` | `/var/lib/gorch/totp.db` | Path to the JSON store holding TOTP bindings, backup codes and used windows — **not** SQLite |
 
 ## Service Fields
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `EXEC_CMD` | Yes | — | Command to execute |
-| `RESTART_CMD` | No | — | Shell command for graceful reload instead of stop+start (e.g. `nginx -s reload`) |
+| `EXEC_CMD` | Yes, unless `CRON` is set | — | Command run through `/bin/sh -c`; plain commands get an `exec` prefix; max 1024 bytes |
+| `RESTART_CMD` | No | — | Shell command for graceful reload instead of stop+start (e.g. `nginx -s reload`); 15 s timeout |
 | `WORK_DIR` | No | Config file directory | Working directory for the process |
 | `RESTART_POLICY` | No | `never` | `always` / `on-failure` / `never` |
-| `BACK_OFF` | No | `0` (auto-restart uses `2`) | Seconds to wait before restart attempt |
-| `PRE_ACTION` | No | — | Shell command run via `sh -c` before start |
-| `CHECK_PORT` | No | `0` | If set, kill any process occupying this port before start |
-| `PID_FILE` | No | — | PID file path for daemonized processes |
+| `BACK_OFF` | No | `0` (falls back to `5`) | Seconds to wait before a restart attempt |
+| `PRE_ACTION` | No | — | Shell command run via `/bin/sh -c` before start; 15 s timeout, failure only warns |
+| `CHECK_PORT` | No | `0` | Validated but not applied — see Compatibility Fields |
+| `PID_FILE` | No | — | Compatibility field, not applied |
 | `STDOUT` | No | `LOG_DIR/<name>.out.log` | Stdout log file path |
 | `STDERR` | No | `LOG_DIR/<name>.err.log` | Stderr log file path |
-| `DEPENDS_ON` | No | `[]` | Services that must start first (topological order) |
-| `CRON` | No | — | 6-field cron expression (with seconds) for scheduled runs |
-| `ENV_VARS` | No | `{}` | Environment variables passed to the process |
+| `DEPENDS_ON` | No | `[]` | Validated (unknown names / self / cycles), but does not order startup |
+| `CRON` | No | — | 5- or 6-field cron expression; see Cron Expressions |
+| `CRON_TIMEOUT` | No | `0` (off) | Seconds; a cron run still alive after this long is killed with SIGKILL |
+| `ENV_VARS` | No | `{}` | Compatibility field, not applied |
 
 ### Startup Sequence
 
 When a service starts (or restarts), gorch runs the following steps in order:
 
-1. **PRE_ACTION** — if set, executed via `sh -c` in `WORK_DIR`. Failures are logged but do not block startup.
-2. **CHECK_PORT** — if `> 0`, kills any process listening on that port (`lsof` + `SIGKILL`).
-3. **StartProcess** — launches `EXEC_CMD`.
+1. **PRE_ACTION** — if set, run via `/bin/sh -c` in `WORK_DIR` with a 15 s timeout. A failure is logged but does not block startup.
+2. **Log files** — `STDOUT` / `STDERR` are opened in append mode and handed to the child as its file descriptors.
+3. **EXEC_CMD** — launched with `/bin/sh -c`. A plain command (no shell metacharacters) is prefixed with `exec`, so the pid gorch tracks is the service itself; commands are capped at 1024 bytes.
 
 ### Graceful Reload via RESTART_CMD
 
-For daemons that support a reload signal (e.g. `nginx -s reload`, `angie -s reload`), set `RESTART_CMD` so that restarting the service (from the Web UI or `POST /api/services/<name>/restart`) triggers a graceful reload instead of killing and restarting the process.
+For daemons that support a reload signal (e.g. `nginx -s reload`, `angie -s reload`), set `RESTART_CMD` so that restarting the service (from the Web UI or `POST /api/services/<name>/restart`) runs that command instead of killing and restarting the process. It has a 15 s timeout; if it fails, the API returns an error and the service is left running.
 
-### Daemonized Process Tracking
+### Process Adoption on Restart
 
-Daemons like Nginx/Angie fork a master process and exit the original PID. The master is then reparented to init (PPID=1). gorch locates the real master by matching the executable name and preferring the process with PPID=1, falling back to the smallest matching PID.
+gorch tracks the pid it spawned itself. On restart it reads the recorded pid from
+`gorch.state` (an oboe cache snapshot) and only adopts a still-running child
+when both the pid is alive **and** its process start time matches — a reused pid
+is rejected rather than killed by mistake. The Odin build does **not** scan for
+a forked master by executable name or PPID=1; that belonged to the Go version.
 
 ## Environment Variable Expansion
 
-Use `${VAR}` syntax in string fields — they will be expanded from the environment at load time:
+`${VAR}` is expanded at load time, but only in these service fields:
+`EXEC_CMD`, `WORK_DIR`, `RESTART_CMD`, `PRE_ACTION`, `STDOUT`, `STDERR` and
+`PID_FILE`. An unset variable is a **config error** (gorch refuses to start),
+not an empty string. Other fields, including values inside `ENV_VARS`, are not
+expanded.
 
 ```toml
 [services.app]
@@ -90,31 +123,39 @@ WORK_DIR = "${HOME}/projects/app"
 
 ## Runtime Mode
 
-Set `GORCH_MODE` to control log verbosity:
+`GORCH_MODE` sets the minimum log level:
 
 | Value | Log Level | Use Case |
 |-------|-----------|----------|
-| `dev` | `debug` | Troubleshooting — shows process state/etime/rss/cmd per tick |
-| `prod` (default) | `info` | Production |
+| `dev` | `debug` | Troubleshooting — reserved for debug output |
+| anything else (default) | `info` | Production |
+
+The current build emits no debug-level records, so `dev` and production produce
+the same output for now.
 
 ## Cron Expressions
 
-6-field format with seconds:
+5 or 6 whitespace-separated fields — with 6 the first is seconds, with 5
+seconds default to `0`:
 
 ```
-┌──────── second (0-59)
-│ ┌────── minute (0-59)
-│ │ ┌──── hour (0-23)
-│ │ │ ┌── day of month (1-31)
-│ │ │ │ ┌─ month (1-12)
-│ │ │ │ │ ┌ day of week (0-6, Sun=0)
-│ │ │ │ │ │
-* * * * * *
+6 fields:  second minute hour day-of-month month day-of-week
+5 fields:          minute hour day-of-month month day-of-week
+
+second 0-59 | minute 0-59 | hour 0-23 | dom 1-31 | month 1-12 | dow 0-7 (0 and 7 = Sunday)
 ```
 
-Examples: `0 */30 * * * *` (every 30 min), `0 0 8 * * 1-5` (8am weekdays)
+Examples: `0 */30 * * * *` (every 30 min), `0 0 8 * * 1-5` (8am weekdays),
+`0 2 * * *` (02:00 every day, 5-field form).
 
-Cron services cannot be started manually — they run on schedule. Overlapping runs are detected and skipped.
+Shortcuts are also accepted: `@every 30s` / `@every 5m` / `@every 2h`, plus
+`@yearly` (`@annually`), `@monthly`, `@weekly`, `@daily` (`@midnight`),
+`@hourly` and `@minutely`.
+
+Cron services are not started at boot — the scheduler runs them. A manual
+`start` triggers one run immediately without disturbing the schedule, and a
+`restart` ends the run currently in flight. Overlapping runs are detected and
+skipped. Use `CRON_TIMEOUT` (seconds) to kill a run that hangs.
 
 ## Full Example
 
@@ -133,12 +174,8 @@ EXEC_CMD = "python manage.py runserver 0.0.0.0:8000"
 WORK_DIR = "/app/backend"
 RESTART_POLICY = "on-failure"
 BACK_OFF = 5
-CHECK_PORT = 8000
 STDOUT = "/tmp/gorch/logs/api.stdout.log"
 STDERR = "/tmp/gorch/logs/api.stderr.log"
-DEPENDS_ON = ["redis"]
-CRON = "0 */30 * * * *"
-ENV_VARS = { DEBUG = "true", REDIS_URL = "redis://localhost:6379/0" }
 
 [services.redis]
 EXEC_CMD = "redis-server /etc/redis/redis.conf"
@@ -150,7 +187,6 @@ STDOUT = "/tmp/gorch/logs/redis.log"
 EXEC_CMD = "nginx -g 'daemon off;'"
 RESTART_POLICY = "always"
 RESTART_CMD = "nginx -s reload"
-DEPENDS_ON = ["api"]
 ```
 
 ## Service Recipes
@@ -164,7 +200,6 @@ Nginx and Angie use a multi-process architecture: a master process manages worke
 ```toml
 [services.angie]
 EXEC_CMD = './sbin/angie -p /opt/wares/angie'
-PID_FILE = '/var/run/angie.pid'
 PRE_ACTION = 'ps -efww | grep -F angie | grep -v grep | cut -w -f3 | xargs kill -9'
 RESTART_CMD = './sbin/angie -p /opt/wares/angie -s reload'
 RESTART_POLICY = 'on-failure'
@@ -181,18 +216,16 @@ STDERR = '/tmp/gorch/logs/angie.err.log'
 ```toml
 [services.redis]
 EXEC_CMD = '/opt/homebrew/opt/redis/bin/redis-server /opt/homebrew/etc/redis.conf'
-PID_FILE = '/opt/homebrew/var/run/redis.pid'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
 WORK_DIR = '/opt/homebrew/var'
 STDOUT = '/opt/homebrew/var/log/redis.log'
 STDERR = '/opt/homebrew/var/log/redis.log'
-CHECK_PORT = 6379
 ```
 
 - `EXEC_CMD` points to the Homebrew-installed Redis binary and config
 - `WORK_DIR` is the Redis data directory (`/opt/homebrew/var` on Apple Silicon, `/usr/local/var` on Intel)
-- `CHECK_PORT = 6379` ensures no stale process holds the port on restart
+- Both log fields pointing at the same file is fine; they are opened in append mode
 
 ### Go Application
 
@@ -202,7 +235,6 @@ EXEC_CMD = './myapp'
 WORK_DIR = '/opt/sites/myapp'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
-CHECK_PORT = 9000
 STDOUT = '/tmp/gorch/logs/myapp.out.log'
 STDERR = '/tmp/gorch/logs/myapp.err.log'
 ```
@@ -215,7 +247,6 @@ EXEC_CMD = './bin/godoc -http=127.0.0.1:6060'
 WORK_DIR = '/Users/ryan/gopath'
 RESTART_POLICY = 'on-failure'
 BACK_OFF = 5
-CHECK_PORT = 6060
 STDOUT = '/tmp/gorch/logs/godoc.out.log'
 STDERR = '/tmp/gorch/logs/godoc.err.log'
 ```
@@ -228,7 +259,8 @@ Services with `CRON` run on schedule, not continuously. gorch skips overlapping 
 [services.daily_backup]
 EXEC_CMD = './backup.sh'
 WORK_DIR = '/opt/backup'
-CRON = '0 0 2 * * *'  # 2:00 AM every day
+CRON = '0 0 2 * * *'        # 2:00 AM every day
+CRON_TIMEOUT = 3600         # kill a run that exceeds an hour
 STDOUT = '/tmp/gorch/logs/backup.out.log'
 STDERR = '/tmp/gorch/logs/backup.err.log'
 ```

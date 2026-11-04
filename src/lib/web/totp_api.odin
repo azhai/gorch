@@ -168,7 +168,7 @@ totp_error :: proc(err: totp.Error) -> (status: int, message: string) {
 	case .Invalid_Backup_Code:
 		return 400, "invalid backup code"
 	case .Bad_Master_Key:
-		return 500, "TOTP_SECRET must be 32 hex characters (openssl rand -hex 32)"
+		return 500, "TOTP_SECRET must be 64 hex characters / 32 bytes (openssl rand -hex 32)"
 	case .Crypto_Failure:
 		return 500, "cannot decrypt the stored secret"
 	case .Storage_Failure:

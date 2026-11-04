@@ -274,7 +274,7 @@ open_totp :: proc(config: ^cfg.Config) -> ^totp.TOTP {
 			"err",
 			err,
 			"hint",
-			"TOTP_SECRET must be 32 hex characters (openssl rand -hex 32)",
+			"TOTP_SECRET must be 64 hex characters / 32 bytes (openssl rand -hex 32)",
 		)
 		return nil
 	}
