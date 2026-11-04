@@ -2,6 +2,7 @@ package supervisor
 
 import "core:os"
 import "core:strings"
+import "core:sys/posix"
 import "core:testing"
 import "core:time"
 
@@ -36,6 +37,16 @@ test_policy_of :: proc(t: ^testing.T) {
 	testing.expect(t, policy_of("never") == .Never)
 	testing.expect(t, policy_of("") == .Never)
 	testing.expect(t, policy_of("garbage") == .Never)
+}
+
+@(test)
+test_read_rss_reports_the_running_process :: proc(t: ^testing.T) {
+	mb := read_rss_mb(int(posix.getpid()))
+	testing.expectf(t, mb > 0, "the test process must own resident memory, got {}", mb)
+	testing.expectf(t, mb < 2048, "test process RSS absurdly large: {} MB", mb)
+
+	testing.expect(t, read_rss_mb(-1) == 0, "invalid pid must report unknown")
+	testing.expect(t, read_rss_mb(0) == 0, "pid 0 must report unknown")
 }
 
 @(private = "file")

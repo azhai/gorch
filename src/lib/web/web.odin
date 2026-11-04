@@ -464,7 +464,7 @@ write_service_json :: proc(b: ^strings.Builder, ss: status.ServiceStatus) {
 	write_json_string(b, ss.name)
 	fmt.sbprintf(
 		b,
-		`,"status":"{}","pid":{},"uptime":{},"memoryMB":{:.2f},"startedAt":{}}}`,
+		`,"status":"{}","pid":{},"uptime":{},"memoryMB":{:.1f},"startedAt":{}}}`,
 		status.status_to_string(ss.status),
 		ss.pid,
 		ss.uptime,

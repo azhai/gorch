@@ -47,6 +47,7 @@ STOP_GRACE :: 5 // seconds between SIGTERM and SIGKILL
 POLL :: 500 * time.Millisecond
 SAVE_EVERY :: time.Second
 ROTATE_EVERY :: 60 // seconds; a daemon log only needs to roll over to the minute
+MEM_EVERY :: 5 // seconds between RSS samples; the reads are cheap but not free
 
 // Service is the runtime half of a config.ServiceConfig.
 Service :: struct {
@@ -59,6 +60,7 @@ Service :: struct {
 	started_at:   i64, // unix seconds
 	exited_at:    i64,
 	exit_code:    int,
+	memory_mb:    f64, // last sampled RSS of the pid tree, in MB
 	restarts:     int,
 	exits:        [dynamic]i64, // restart timestamps inside the budget window
 	next_at:      i64, // earliest unix second the next start may happen
@@ -89,6 +91,7 @@ Supervisor :: struct {
 	halt:         bool,
 	rotator:      logfile.Rotator,
 	last_rotate:  i64, // unix seconds of the last log rotation pass
+	last_mem:     i64, // unix seconds of the last RSS sample pass
 	cron_sched:   ^cron.Scheduler,
 	cron_procs:   map[string]os.Process, // one-shot runs in flight, by service
 	removing:     [dynamic]string, // services deleted from the config, awaiting a reap
@@ -365,6 +368,9 @@ snapshot :: proc(sv: ^Supervisor) -> []status.ServiceStatus {
 				ss.started_at = s.cron_started
 			}
 		}
+		if s.pid > 0 || s.cron_pid > 0 {
+			ss.memory_mb = s.memory_mb
+		}
 		if s.exit_code != 0 || s.status == .Crashed || s.status == .Failed {
 			code := s.exit_code
 			ss.exit_code = &code
@@ -373,6 +379,42 @@ snapshot :: proc(sv: ^Supervisor) -> []status.ServiceStatus {
 		out[i] = ss
 	}
 	return out
+}
+
+// Mem_Sample pairs a service name with the pid whose tree to measure, so the
+// /proc walk can run after the lock is released.
+Mem_Sample :: struct {
+	name: string,
+	pid:  int,
+}
+
+// sample_memory refreshes the resident memory of every running service. The
+// per-pid reads run outside the lock so a slow walk cannot stall the API;
+// only the field write takes the write lock, and a pid that changed in between
+// is skipped rather than its memory attributed to the wrong process.
+sample_memory :: proc(sv: ^Supervisor) {
+	sync.rw_mutex_shared_lock(&sv.mu)
+	pending: [dynamic]Mem_Sample
+	for name in sv.order {
+		s := sv.services[name]
+		if s.pid > 0 && (s.status == .Running || s.status == .Starting) {
+			append(&pending, Mem_Sample{name, s.pid})
+		}
+	}
+	sync.rw_mutex_shared_unlock(&sv.mu)
+	defer delete(pending)
+
+	for p in pending {
+		mb := read_rss_mb(p.pid)
+		if mb <= 0 {
+			continue
+		}
+		sync.rw_mutex_lock(&sv.mu)
+		if s, ok := sv.services[p.name]; ok && s.pid == p.pid {
+			s.memory_mb = mb
+		}
+		sync.rw_mutex_unlock(&sv.mu)
+	}
 }
 
 // tick is one pass of the loop: reap exits, apply restart deadlines, then start
@@ -437,6 +479,7 @@ on_exit_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64, exit_code: int) {
 	s.exited_at = now
 	s.exit_code = exit_code
 	s.kill_at = 0
+	s.memory_mb = 0 // the tree it measured is gone; a restart re-samples
 
 	// An operator asked for a restart: come back immediately, budget untouched.
 	if s.restarting {
@@ -795,6 +838,10 @@ loop_run :: proc(l: ^Loop) {
 			_ = flush(l.sv)
 		} else if l.sv.has_store {
 			_ = state.save_if_due(&l.sv.store, SAVE_EVERY)
+		}
+		if now := now_seconds(l.sv); now-l.sv.last_mem >= MEM_EVERY {
+			sample_memory(l.sv)
+			l.sv.last_mem = now
 		}
 		if now := now_seconds(l.sv); now-l.sv.last_rotate >= ROTATE_EVERY {
 			rotate_logs(l.sv, time.now())
