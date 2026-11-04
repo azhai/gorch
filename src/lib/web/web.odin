@@ -103,15 +103,17 @@ serve :: proc(cfg: ^config.Config, static_dir: string, provider: Provider) -> st
 	defer net.close(listener)
 
 	srv := Server{cfg = cfg, provider = provider}
-	source := ""
+	// The embedded copy is always loaded: a web/ directory next to the binary
+	// or the config overrides it file by file, but an incomplete directory
+	// must not take the whole UI down - missing files fall back to it.
+	srv.embedded = embedded_assets()
+	source := "embedded"
 	if len(static_dir) > 0 && os.exists(fmt.tprintf("{}/index.html", static_dir)) {
 		srv.static_dir = static_dir
 		source = static_dir
 	} else {
-		// No usable directory next to the binary or the config: fall back to the
+		// No usable directory next to the binary or the config: serve the
 		// copy baked in at build time rather than refusing to start.
-		srv.embedded = embedded_assets()
-		source = "embedded"
 		glog.info("serving the embedded frontend", "files", len(srv.embedded))
 	}
 
@@ -675,7 +677,9 @@ serve_static :: proc(srv: ^Server, conn: net.TCP_Socket, rest, prefix: string) {
 }
 
 // read_asset prefers the web/ directory on disk and falls back to the embedded
-// copy, so editing the frontend needs no rebuild but a moved binary still works.
+// copy per file, so editing the frontend needs no rebuild, a moved binary still
+// works, and a partial web/ directory mixes with the embedded assets instead of
+// serving HTML for missing scripts.
 read_asset :: proc(srv: ^Server, rest: string) -> ([]byte, bool) {
 	if len(srv.static_dir) > 0 {
 		full := fmt.tprintf("{}{}", srv.static_dir, rest)
@@ -684,7 +688,6 @@ read_asset :: proc(srv: ^Server, rest: string) -> ([]byte, bool) {
 				return data, true
 			}
 		}
-		return nil, false
 	}
 	if data, ok := srv.embedded[rest]; ok {
 		return data, true
