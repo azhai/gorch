@@ -18,7 +18,9 @@ rss_sample :: proc() -> (parents: map[int]int, rss: map[int]f64, ok: bool) {
 	}
 	defer delete(entries)
 
-	page := f64(posix.sysconf(posix._SC_PAGE_SIZE))
+	// _SC_PAGE_SIZE is an untyped constant in this core:sys/posix variant, so
+	// the SC conversion must be explicit for sysconf to accept it.
+	page := f64(posix.sysconf(posix.SC(posix._SC_PAGE_SIZE)))
 	if page <= 0 {
 		page = 4096
 	}
