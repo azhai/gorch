@@ -1,6 +1,6 @@
 # gorch
 
-轻量级进程管理工具，使用 Go 编写，灵感来自 [Sysg](https://github.com/ra0x3/systemg) 和 [Supervisor](http://supervisord.org/)。
+轻量级进程管理工具，使用 Odin 编写，灵感来自 [Sysg](https://github.com/ra0x3/systemg) 和 [Supervisor](http://supervisord.org/)。
 
 单二进制文件，无运行时依赖。声明式 TOML 配置。内置 Web 管理界面。
 
@@ -23,24 +23,35 @@ gorch 非常适合 Web 应用、API 服务、定时任务、无状态守护进�
 
 ## 二进制文件
 
-本仓库构建三个二进制文件：
+本仓库构建两个二进制文件：
 
 | 二进制 | 功能 |
 |--------|------|
 | **gorch** | 进程管理工具 — 管理常驻服务、定时任务，提供 CLI **和** Web 界面 |
-| **gorch-noweb** | 同一个 supervisor，用 `-tags noweb` 构建 — 只有 CLI，不含 HTTP 服务器和嵌入的 SPA |
 | **weblite** | 轻量级静态文件服务器 — 零配置，支持目录列表，直接 serve 一个目录 |
 
-`gorch` 与 `gorch-noweb` 来自同一份源码（`./cmd/orchard`）；`make noweb` 可以在不构建前端的情况下单独产出后者。
+两者均为 Odin 编写。Web 界面以 gzip 压缩后嵌入 `gorch` 二进制，部署只需一个文件；配置旁若存在 `web/` 目录则优先于内嵌副本。
 
 ## 安装
 
 ### 从源码构建
 
+需要 [Odin](https://odin-lang.org/) `dev-2026-10` 或更新版本；`make deps` 拉取唯一的子模块。
+
 ```sh
-export PATH="$GOPATH/bin:$PATH"
-go install github.com/azhai/gorch/cmd/orchard@latest
+make deps        # 拉取 vendor/oboe
+make one         # 构建本机版本 ./bin/gorch
 ```
+
+发布版覆盖 macOS 与 Linux 的 arm64/amd64 四个目标（macOS 11+；Linux 为静态 musl 链接，目标机无需任何依赖）：
+
+```sh
+make build                                   # 四个目标 + bin/SHA256SUMS
+make build TARGETS="linux_arm64"             # 单个目标
+make build CROSS_CC="x86_64-linux-musl-gcc"  # 覆盖交叉链接器（默认 zig cc）
+```
+
+Linux 静态链接会带上 `third_party/zlib` 里的精简 zlib 源码（状态快照压缩用）；本机构建直接用系统 zlib。
 
 ### 安装为系统服务
 

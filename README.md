@@ -1,6 +1,6 @@
 # gorch
 
-Lightweight process supervisor written in Go, inspired by [Sysg](https://github.com/ra0x3/systemg) and [Supervisor](http://supervisord.org/).
+Lightweight process supervisor written in Odin, inspired by [Sysg](https://github.com/ra0x3/systemg) and [Supervisor](http://supervisord.org/).
 
 Single binary, no runtime dependencies. Declarative TOML config. Built-in Web UI.
 
@@ -23,24 +23,35 @@ gorch is great for web apps, API servers, cron jobs, and stateless daemons. It i
 
 ## Binaries
 
-Three binaries are built from this repo:
+Two binaries are built from this repo:
 
 | Binary | What it does |
 |--------|-------------|
 | **gorch** | Process supervisor — manages long-running services and cron jobs, with CLI **and** Web UI |
-| **gorch-noweb** | Same supervisor built with `-tags noweb` — CLI only, no HTTP server and no embedded SPA |
 | **weblite** | Lightweight static file server — serves a directory with directory listing, zero config |
 
-Both `gorch` and `gorch-noweb` come from the same source (`./cmd/orchard`); `make noweb` builds the latter without touching the frontend.
+Both are written in Odin. The Web UI is embedded into the `gorch` binary as gzip-compressed assets, so a single file is all you deploy; a `web/` directory next to the config still wins over the embedded copy.
 
 ## Install
 
 ### From Source
 
+Requires [Odin](https://odin-lang.org/) `dev-2026-10` or newer; `make deps` fetches the one vendored submodule.
+
 ```sh
-export PATH="$GOPATH/bin:$PATH"
-go install github.com/azhai/gorch/cmd/orchard@latest
+make deps        # fetch vendor/oboe
+make one         # build ./bin/gorch for this machine
 ```
+
+Release builds for macOS and Linux, arm64 and amd64 (macOS 11+; Linux binaries are static musl and need nothing on the target):
+
+```sh
+make build                                   # all four targets, plus bin/SHA256SUMS
+make build TARGETS="linux_arm64"             # one target
+make build CROSS_CC="x86_64-linux-musl-gcc"  # override the cross linker (default: zig cc)
+```
+
+Linux links the vendored minimal zlib in `third_party/zlib` (used for the state snapshot) into the static binary. A native build just uses the system zlib.
 
 ### Install as System Service
 
