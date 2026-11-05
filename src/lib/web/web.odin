@@ -6,12 +6,13 @@ package web
 // what is here is the transport: static files, the URL-prefix injection, a JWT
 // login and the routing table.
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem/virtual"
 import "core:net"
 import "core:os"
 import "core:strings"
-import "core:thread"
+import "core:sys/posix"
 import "core:time"
 
 import "../../lib/config"
@@ -129,23 +130,91 @@ serve :: proc(cfg: ^config.Config, static_dir: string, provider: Provider) -> st
 			continue
 		}
 		args := Conn_Args{srv = &srv, conn = conn}
-		thread.create_and_start_with_poly_data(args, handle_conn, context, .Normal, true)
+		spawn_conn(args)
 	}
 	return ""
 }
 
 // ---- connection handling ----
 
+// A connection thread exists for one request (or one SSE stream) and every
+// handler is shallow, so 512 KiB of stack is far more than the deepest path
+// needs. It still matters: Odin's thread.create inherits RLIMIT_STACK, which is
+// 8 MiB on macOS and 8 MiB on a default Linux too. One dashboard opens ~20
+// assets and a phone left on the page keeps an SSE thread forever, so a handful
+// of tabs cost hundreds of MiB of address space - a real limit on a 256 MiB
+// router. Creating the pthread ourselves lets us size the stack to the job.
+CONN_STACK_SIZE :: 512 * 1024
+
+// Conn_Args is handed to the thread through the heap: the accept loop cannot
+// pass it by value into a raw pthread, and the connection thread frees it with
+// the heap allocator after the request arena is gone.
+spawn_conn :: proc(args: Conn_Args) {
+	heap := runtime.heap_allocator()
+	arg := new(Conn_Args, heap)
+	arg^ = args
+
+	attr: posix.pthread_attr_t
+	if posix.pthread_attr_init(&attr) != nil {
+		free(arg, heap)
+		net.close(args.conn)
+		return
+	}
+	defer posix.pthread_attr_destroy(&attr)
+	posix.pthread_attr_setstacksize(&attr, CONN_STACK_SIZE)
+	posix.pthread_attr_setdetachstate(&attr, .CREATE_DETACHED)
+
+	tid: posix.pthread_t
+	if posix.pthread_create(&tid, &attr, conn_thread, arg) != nil {
+		// Out of threads: answer nothing rather than leaking the socket.
+		free(arg, heap)
+		net.close(args.conn)
+	}
+}
+
+// conn_thread is a plain pthread entry, so it has to install a context itself.
+// handle_conn immediately replaces both allocators with the connection arena,
+// so the default context is only a shell. The temp allocator is cleared on
+// purpose: `runtime.default_context` points at a thread-local 256 KiB arena
+// that Odin creates on first use and destroys when one of *its* threads ends.
+// A raw pthread never runs that cleanup, so leaving it in place leaked a block
+// per connection - `leaks` showed 55 MB of them after a few hundred requests.
+conn_thread :: proc "c" (arg: rawptr) -> rawptr {
+	context = runtime.default_context()
+	context.temp_allocator = {}
+	handle_conn((^Conn_Args)(arg)^)
+	// core:os keeps its own thread-local temp arenas (every os.open converts the
+	// path inside one) and frees them through a thread-local cleaner. Odin runs
+	// those for threads it created; this one is ours, so run them here or each
+	// /logs request leaks the 256 KiB arena behind its os.open.
+	runtime.run_thread_local_cleaners()
+	free(arg, runtime.heap_allocator())
+	return nil
+}
+
 handle_conn :: proc(args: Conn_Args) {
 	// Every allocation a request makes is released when the thread ends, which
 	// keeps the shared heap out of the picture entirely. Each connection needs
 	// its own arena: Odin's temp allocator belongs to the thread that owns it.
+	//
+	// 64 KiB is the reservation for the opening block: a static asset or a JSON
+	// body usually fits, a 500-line log tail grows it by the size it asked for.
+	// The previous default - 1 MiB reserved and committed - was pure overhead
+	// for a 300-byte response and is what made each idle connection cost a
+	// megabyte of address space.
 	arena: virtual.Arena
-	if err := virtual.arena_init_growing(&arena); err != nil {
+	if err := virtual.arena_init_growing(&arena, 64 * 1024); err != nil {
 		return
 	}
 	defer virtual.arena_destroy(&arena)
 	context.allocator = virtual.arena_allocator(&arena)
+	// Temp allocations (fmt.tprintf builds the on-disk asset path) come from
+	// context.temp_allocator, a thread-local 4 MiB arena. The core only
+	// destroys that arena for threads it started without an explicit
+	// init_context, so handing ours in leaked 4 MiB per connection - the
+	// dashboard alone opens dozens of static files. Point temp at the
+	// connection arena so it dies with it.
+	context.temp_allocator = virtual.arena_allocator(&arena)
 
 	conn := args.conn
 	defer net.close(conn)
