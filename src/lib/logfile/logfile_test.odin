@@ -101,8 +101,28 @@ test_tail_window_starts_mid_line :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_tail_missing_file :: proc(t: ^testing.T) {
-	got, err := tail("/nonexistent/gorch/log.log", 10)
+test_tail_window_is_capped :: proc(t: ^testing.T) {
+	dir := scratch(t, "cap")
+	defer {
+		_ = os.remove_all(dir)
+		delete(dir)
+	}
+	path := fmt.tprintf("{}/huge.log", dir)
+
+	// One line longer than the cap: the window must stop at TAIL_MAX_WINDOW
+	// rather than reading the whole file into memory.
+	line := strings.repeat("x", int(TAIL_MAX_WINDOW) + 4096, context.temp_allocator)
+	write_file(t, path, line)
+
+	got, err := tail(path, 10)
+	defer tail_destroy(&got)
+	testing.expectf(t, err == "", "tail failed: {}", err)
+	testing.expectf(t, len(got.buf) <= int(TAIL_MAX_WINDOW), "window {} exceeds the cap", len(got.buf))
+	testing.expect(t, len(got.lines) == 0, "a partial line is not a line")
+}
+
+@(test)
+test_tail_missing_file :: proc(t: ^testing.T) {	got, err := tail("/nonexistent/gorch/log.log", 10)
 	defer tail_destroy(&got)
 	testing.expectf(t, err == "", "a missing log is not an error, got {}", err)
 	testing.expect(t, len(got.lines) == 0, "no lines")

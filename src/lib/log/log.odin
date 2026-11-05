@@ -4,6 +4,7 @@
 // and Odin rejects two packages with the same name in one program.
 package glog
 
+import "base:runtime"
 import "core:os"
 import "core:fmt"
 import "core:time"
@@ -22,11 +23,37 @@ mu     : sync.Mutex
 level  : Level = .Info
 inited : bool
 
+// line is the one buffer every record is formatted into. The logger already
+// serializes on `mu`, so a shared builder is safe, and it removes the last
+// reason the logger had to allocate at all.
+//
+// It used to take 256 bytes per call from context.temp_allocator. That arena
+// is thread_local and append-only - nothing ever calls free_all on it - so
+// each thread that logged grew its own arena by 256 bytes per line, in 4 MiB
+// blocks, for the life of the process. On a router left running for weeks
+// that is exactly the kind of resident memory that never comes back.
+line: strings.Builder
+
+// line_buffer makes sure `line` exists. It is pinned to the raw heap on
+// purpose: the buffer lives as long as the process, and going through
+// context.allocator would make it look like a leak to a test's tracking
+// allocator.
+line_buffer :: proc() -> ^strings.Builder {
+	if line.buf == nil {
+		strings.builder_init_len_cap(&line, 0, 256, runtime.heap_allocator())
+	}
+	return &line
+}
+
 set_level_from_env :: proc() {
-	if mode, ok := os.lookup_env_alloc("GORCH_MODE", context.temp_allocator); ok && mode == "dev" {
-		level = .Debug
-	} else {
-		level = .Info
+	// Reading the mode allocates; do it on the ordinary heap and hand it back,
+	// rather than touching the temp arena before the process has done any work.
+	level = .Info
+	if mode, ok := os.lookup_env("GORCH_MODE", context.allocator); ok {
+		if mode == "dev" {
+			level = .Debug
+		}
+		delete(mode, context.allocator)
 	}
 	inited = true
 }
@@ -73,21 +100,20 @@ log_at :: proc(l: Level, msg: string, kv: ..any) {
 	hms := time.time_to_string_hms(now, hb[:])
 	db: [16]u8
 	ymd := time.to_string_yyyy_mm_dd(now, db[:])
-	buf: strings.Builder
-	// builder_init_len sets the *length*, not the capacity - using it here padded
-	// every line with 256 NUL bytes. Reserve capacity, start empty.
-	strings.builder_init_len_cap(&buf, 0, 256, context.temp_allocator)
-	defer strings.builder_destroy(&buf)
+	// Reset, keep the capacity: the buffer grows to the longest record this
+	// process ever writes and then stops allocating. See `line` above.
+	buf := line_buffer()
+	strings.builder_reset(buf)
 
-	fmt.sbprintf(&buf, "{} {} level={} msg={}", ymd, hms, level_tag(l), msg)
+	fmt.sbprintf(buf, "{} {} level={} msg={}", ymd, hms, level_tag(l), msg)
 	i := 0
 	for i + 1 < len(kv) {
-		fmt.sbprintf(&buf, " {}={}", kv[i], kv[i+1])
+		fmt.sbprintf(buf, " {}={}", kv[i], kv[i+1])
 		i += 2
 	}
-	strings.write_byte(&buf, '\n')
+	strings.write_byte(buf, '\n')
 
-	os.write_string(os.stderr, strings.to_string(buf))
+	os.write_string(os.stderr, strings.to_string(buf^))
 }
 
 debug :: proc(msg: string, kv: ..any) { log_at(.Debug, msg, ..kv) }

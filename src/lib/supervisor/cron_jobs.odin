@@ -191,6 +191,12 @@ reap_cron_locked :: proc(sv: ^Supervisor, now: i64) -> bool {
 		if err == nil && st.exited {
 			s.cron_pid = 0
 			s.cron_started = 0
+			// A run that was stopped on request was marked Stopping; now that
+			// the process is gone the card has to fall back to Stopped instead
+			// of spinning "stopping" until the next fire.
+			if s.status == .Stopping {
+				s.status = .Stopped
+			}
 			status_text := st.exit_code == 0 ? "success" : "failed"
 			record_run(sv, name, status_text, now, st.exit_code, 0, true)
 			append(&finished, name)

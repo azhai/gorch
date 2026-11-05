@@ -9,7 +9,7 @@ ASSET_BLOB := #load("assets.bin")
 
 // ASSET_SIZE is the size of ASSET_BLOB once inflated.
 @(private)
-ASSET_SIZE :: 192605
+ASSET_SIZE :: 196546
 
 // Asset is one file inside the inflated blob.
 @(private)
@@ -22,25 +22,25 @@ Asset :: struct {
 // ASSETS is sorted by path.
 @(private)
 ASSETS := []Asset{
-	{"/css/material3.css", 0, 21291},
-	{"/favicon.svg", 21291, 1327},
-	{"/index.html", 22618, 47117},
-	{"/js/api.js", 69735, 6321},
-	{"/js/app.js", 76056, 5187},
-	{"/js/auth.js", 81243, 1346},
-	{"/js/config.js", 82589, 415},
-	{"/js/format.js", 83004, 1532},
-	{"/js/i18n.js", 84536, 1748},
-	{"/js/main.js", 86284, 930},
-	{"/js/router.js", 87214, 2558},
-	{"/js/sse.js", 89772, 2778},
-	{"/js/toast.js", 92550, 813},
-	{"/js/translations.js", 93363, 19089},
-	{"/js/views/config.js", 112452, 14392},
-	{"/js/views/dashboard.js", 126844, 1817},
-	{"/js/views/login.js", 128661, 2093},
-	{"/js/views/logs.js", 130754, 1439},
-	{"/js/views/totp.js", 132193, 3230},
-	{"/logo.svg", 135423, 1263},
-	{"/vendor/alpine.esm.min.js", 136686, 55919},
+	{"/css/material3.css", 0, 21761},
+	{"/favicon.svg", 21761, 1327},
+	{"/index.html", 23088, 47384},
+	{"/js/api.js", 70472, 6736},
+	{"/js/app.js", 77208, 7218},
+	{"/js/auth.js", 84426, 1346},
+	{"/js/config.js", 85772, 415},
+	{"/js/format.js", 86187, 1571},
+	{"/js/i18n.js", 87758, 1748},
+	{"/js/main.js", 89506, 930},
+	{"/js/router.js", 90436, 2558},
+	{"/js/sse.js", 92994, 2778},
+	{"/js/toast.js", 95772, 813},
+	{"/js/translations.js", 96585, 19176},
+	{"/js/views/config.js", 115761, 14392},
+	{"/js/views/dashboard.js", 130153, 2449},
+	{"/js/views/login.js", 132602, 2093},
+	{"/js/views/logs.js", 134695, 1439},
+	{"/js/views/totp.js", 136134, 3230},
+	{"/logo.svg", 139364, 1263},
+	{"/vendor/alpine.esm.min.js", 140627, 55919},
 }

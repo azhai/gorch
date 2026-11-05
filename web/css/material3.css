@@ -693,6 +693,26 @@ a {
   background: var(--md-tertiary);
 }
 
+/* SIGTERM is in flight: the process is alive but on its way out, which is
+   neither green nor grey yet. The pulse says "in progress" without adding a
+   fourth colour to the palette. */
+.md-status-dot--stopping {
+  background: var(--md-tertiary);
+  animation: md-status-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes md-status-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-status-dot--stopping {
+    animation: none;
+  }
+}
+
 .md-metric-label {
   display: block;
   font-size: 11px;

@@ -81,16 +81,23 @@ export async function fetchService(name) {
   return json.data
 }
 
+// The three mutations answer with the service as it stands after the call, so
+// the caller can repaint from the reply instead of re-fetching the whole list.
+// They also carry `success`, which the old fire-and-forget versions dropped -
+// a 400 was silently reported to the user as a successful start.
 export async function startService(name) {
-  await authFetch(`${API_BASE}/services/${name}/start`, { method: 'POST' })
+  const res = await authFetch(`${API_BASE}/services/${name}/start`, { method: 'POST' })
+  return readResult(res)
 }
 
 export async function stopService(name) {
-  await authFetch(`${API_BASE}/services/${name}/stop`, { method: 'POST' })
+  const res = await authFetch(`${API_BASE}/services/${name}/stop`, { method: 'POST' })
+  return readResult(res)
 }
 
 export async function restartService(name) {
-  await authFetch(`${API_BASE}/services/${name}/restart`, { method: 'POST' })
+  const res = await authFetch(`${API_BASE}/services/${name}/restart`, { method: 'POST' })
+  return readResult(res)
 }
 
 export async function fetchLogs(name, lines = 500, type = 'stdout') {

@@ -10,11 +10,12 @@
 .air.toml
 bin/
 logs/
+/supervisor
+test-output/
+tmp/
 *.log
 **/dist/
 **/node_modules/
-test-output/
-tmp/
 
 AGENTS.md
 CLAUDE.md

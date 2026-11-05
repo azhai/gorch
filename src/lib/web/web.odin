@@ -11,6 +11,7 @@ import "core:fmt"
 import "core:mem/virtual"
 import "core:net"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
 import "core:time"
@@ -651,10 +652,18 @@ handle_service :: proc(
 		send_json_error(conn, 400, err)
 		return
 	}
+	// Answer with the service as it stands now, not just an acknowledgement:
+	// the caller repaints from this payload, so Start/Stop/Restart shows its
+	// effect without a second round trip and without waiting for an SSE frame.
+	ss, found := service_status(srv, name)
 	b := strings.builder_make()
-	strings.write_string(&b, `{"name":`)
-	write_json_string(&b, name)
-	fmt.sbprintf(&b, `,"action":"{}"}`, action)
+	if found {
+		write_service_json(&b, ss)
+	} else {
+		strings.write_string(&b, `{"name":`)
+		write_json_string(&b, name)
+		fmt.sbprintf(&b, `,"action":"{}"}`, action)
+	}
 	send_json_ok(conn, 200, strings.to_string(b))
 }
 
@@ -711,17 +720,191 @@ handle_clear_logs :: proc(srv: ^Server, conn: net.TCP_Socket, name, query: strin
 	send_json_ok(conn, 200, `{"message":"logs cleared"}`)
 }
 
-// handle_sse publishes the events the SPA listens for. Without a supervisor
-// there is no status to report, so the tick carries an empty service map and
-// only keeps the connection (and its "connected" indicator) alive.
+// ---- server-sent events ----
+//
+// The SPA opens one EventSource for the whole app and expects two shapes,
+// both wrapped in `payload` because sse.js tags the parsed object with a `type`
+// of its own:
+//
+//   status_change  {"payload":{"name","status","pid","memoryMB","startedAt","exitCode"?}}
+//   uptime_tick    {"payload":{"services":{"<name>":{"pid","memoryMB","startedAt"}}}}
+//
+// status_change is what makes a start/stop show up without a page reload; the
+// tick only carries the numbers that change every second (pid, memory, start
+// time) and is the reason the elapsed-time counters keep breathing.
+
+// sse_interval turns the SPA's "5s" / "1m" / "15m" into a Duration. Anything it
+// cannot parse falls back to 5s: a bad query parameter must not stall the
+// stream.
+sse_interval :: proc(raw: string) -> time.Duration {
+	value := raw
+	scale := time.Duration(time.Second)
+	switch {
+	case strings.has_suffix(raw, "ms"):
+		value = raw[:len(raw) - 2]
+		scale = time.Millisecond
+	case strings.has_suffix(raw, "s"):
+		value = raw[:len(raw) - 1]
+	case strings.has_suffix(raw, "m"):
+		value = raw[:len(raw) - 1]
+		scale = time.Minute
+	case strings.has_suffix(raw, "h"):
+		value = raw[:len(raw) - 1]
+		scale = time.Hour
+	case:
+		return 5 * time.Second
+	}
+	n, ok := strconv.parse_int(value)
+	if !ok {
+		return 5 * time.Second
+	}
+	d := time.Duration(n) * scale
+	if d < time.Second || d > 24 * time.Hour {
+		return 5 * time.Second
+	}
+	return d
+}
+
+// Sse_Prev is what the previous round saw for one service. The name is a heap
+// copy: saving a config replaces the strings the supervisor holds, and this map
+// outlives that, so a borrowed name would be read after free on the next round.
+Sse_Prev :: struct {
+	name:       string,
+	status:     status.Status,
+	pid:        int,
+	started_at: i64,
+	exit_code:  int,
+}
+
+// write_status_change formats one complete SSE frame for a service whose state
+// changed. The caller sends it; keeping the framing out of the socket path is
+// what makes the wire format testable.
+write_status_change :: proc(b: ^strings.Builder, ss: status.ServiceStatus) {
+	strings.builder_reset(b)
+	strings.write_string(b, `event: status_change` + "\n" + `data: {"payload":{"name":`)
+	write_json_string(b, ss.name)
+	fmt.sbprintf(
+		b,
+		`,"status":"{}","pid":{},"memoryMB":{:.1f},"startedAt":{}`,
+		status.status_to_string(ss.status),
+		ss.pid,
+		ss.memory_mb,
+		ss.started_at,
+	)
+	if ss.exit_code != nil {
+		fmt.sbprintf(b, `,"exitCode":{}`, ss.exit_code^)
+	}
+	strings.write_string(b, "}}\n\n")
+}
+
+// write_uptime_tick formats the frame that carries the numbers changing every
+// second. Only services with a live pid appear: the SPA reads an absent name as
+// "no process" and stops that row's elapsed counter.
+write_uptime_tick :: proc(b: ^strings.Builder, list: []status.ServiceStatus) {
+	strings.builder_reset(b)
+	strings.write_string(b, `event: uptime_tick` + "\n" + `data: {"payload":{"services":{`)
+	first := true
+	for ss in list {
+		if ss.pid <= 0 {
+			continue
+		}
+		if !first {
+			strings.write_byte(b, ',')
+		}
+		first = false
+		write_json_string(b, ss.name)
+		fmt.sbprintf(
+			b,
+			`:{{"pid":{},"memoryMB":{:.1f},"startedAt":{}}}`,
+			ss.pid,
+			ss.memory_mb,
+			ss.started_at,
+		)
+	}
+	strings.write_string(b, "}}}\n\n")
+}
+
+// sse_tick publishes one round: a status_change for every service whose state
+// differs from the previous round, then one uptime_tick with everything still
+// running.
+//
+// All of its allocations come from `scratch`, which the caller empties between
+// rounds. An SSE connection lives for days; the connection arena it would
+// otherwise draw from never returns memory, so a five-second allocation would
+// grow the process forever.
+sse_tick :: proc(
+	srv: ^Server,
+	conn: net.TCP_Socket,
+	prev: ^[dynamic]Sse_Prev,
+	scratch: ^virtual.Arena,
+) -> bool {
+	virtual.arena_free_all(scratch)
+	outer_ctx := context
+	context.allocator = virtual.arena_allocator(scratch)
+	context.temp_allocator = context.allocator
+	defer context = outer_ctx
+
+	list: []status.ServiceStatus
+	if srv.provider.list != nil {
+		list = srv.provider.list(srv.provider.user)
+	}
+
+	frame := strings.builder_make()
+	for ss in list {
+		code := 0
+		has_exit := ss.exit_code != nil
+		if has_exit {
+			code = ss.exit_code^
+		}
+
+		idx := -1
+		for seen, i in prev^ {
+			if seen.name == ss.name {
+				idx = i
+				break
+			}
+		}
+		changed := idx < 0 ||
+			prev[idx].status != ss.status ||
+			prev[idx].pid != ss.pid ||
+			prev[idx].started_at != ss.started_at ||
+			prev[idx].exit_code != code
+		if idx < 0 {
+			append(prev, Sse_Prev{name = strings.clone(ss.name, runtime.heap_allocator())})
+			idx = len(prev^) - 1
+		}
+		prev[idx].status = ss.status
+		prev[idx].pid = ss.pid
+		prev[idx].started_at = ss.started_at
+		prev[idx].exit_code = code
+
+		if !changed {
+			continue
+		}
+		write_status_change(&frame, ss)
+		if !send_all(conn, str_bytes(strings.to_string(frame))) {
+			return false
+		}
+	}
+
+	write_uptime_tick(&frame, list)
+	return send_all(conn, str_bytes(strings.to_string(frame)))
+}
+
+// handle_sse keeps the stream open and drives sse_tick on the requested
+// interval. Without a supervisor there is nothing to report, so every tick
+// carries an empty service map and only keeps the connection - and the
+// dashboard's "connected" indicator - alive.
 handle_sse :: proc(srv: ^Server, conn: net.TCP_Socket, query: string) {
 	interval := "5s"
 	if v, ok := query_param(query, "interval"); ok && len(v) > 0 {
 		interval = v
 	}
+	tick := sse_interval(interval)
+
 	head := strings.builder_make()
 	strings.write_string(&head, "HTTP/1.1 200 OK\r\n")
-	strings.write_string(&head, "Content-Type: text/event-stream\r\n")
+	strings.write_string(&head, "Content-Type: text/event-stream; charset=utf-8\r\n")
 	strings.write_string(&head, "Cache-Control: no-cache\r\n")
 	strings.write_string(&head, "Connection: keep-alive\r\n")
 	strings.write_string(&head, "X-Accel-Buffering: no\r\n\r\n")
@@ -729,14 +912,31 @@ handle_sse :: proc(srv: ^Server, conn: net.TCP_Socket, query: string) {
 		return
 	}
 
-	hello := fmt.tprintf("event: connected\ndata: {{\"interval\":\"{}\"}}\n\n", interval)
+	hello := fmt.tprintf(
+		"event: connected\ndata: {{\"payload\":{{\"interval\":\"{}\"}}}}\n\n",
+		interval,
+	)
 	if !send_all(conn, str_bytes(hello)) {
 		return
 	}
 
+	scratch: virtual.Arena
+	if err := virtual.arena_init_growing(&scratch, 8 * 1024); err != nil {
+		return
+	}
+	defer virtual.arena_destroy(&scratch)
+
+	prev := make([dynamic]Sse_Prev, 0, 0, runtime.heap_allocator())
+	defer {
+		for seen in prev {
+			delete(seen.name, runtime.heap_allocator())
+		}
+		delete(prev)
+	}
+
 	for {
-		time.sleep(5 * time.Second)
-		if !send_all(conn, str_bytes("event: uptime_tick\ndata: {\"services\":{}}\n\n")) {
+		time.sleep(tick)
+		if !sse_tick(srv, conn, &prev, &scratch) {
 			return
 		}
 	}
@@ -843,8 +1043,18 @@ mime_for :: proc(path: string) -> string {
 // ---- response helpers ----
 
 send_all :: proc(conn: net.TCP_Socket, data: []byte) -> bool {
-	n, err := net.send_tcp(conn, data)
-	return err == nil && n == len(data)
+	// send_tcp is allowed to accept less than the whole buffer. For a normal
+	// response the client would see a truncated body; for SSE it would split an
+	// event frame in half, so keep writing until it is all out.
+	sent := 0
+	for sent < len(data) {
+		n, err := net.send_tcp(conn, data[sent:])
+		if err != nil || n <= 0 {
+			return false
+		}
+		sent += n
+	}
+	return true
 }
 
 send :: proc(conn: net.TCP_Socket, code: int, content_type: string, body: []byte) {

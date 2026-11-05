@@ -1,53 +1,40 @@
-# gorch Makefile
+# gorch — Makefile
 #
-# Odin project (requires odin >= dev-2026-10):
-#   src/cmd/gorch — supervisor/CLI entry point (package main)
-#   src/lib/*     — support packages; the ones with *_test.odin run under `odin test`
-#   tools/embedgen — turns web/ into the blob embedded in the binary
-#   web/          — Alpine SPA (Material 3 Monet theme), served from disk if present
+# Odin project (odin >= dev-2026-10). Run `make deps` once after cloning: the
+# state cache comes from the oboe submodule in vendor/oboe.
 #
-# The state cache comes from the oboe submodule (vendor/oboe), wired in through
-# -collection:oboe; run `make deps` once after cloning.
-#
-# The frontend has no build step of its own - Alpine is vendored in web/vendor/
-# - but it is compressed into the binary: `make assets` gzips web/ to about a
-# quarter of its size and writes the table that indexes it. A web/ directory
-# next to the binary or the config still wins over that copy.
+#   make one     local build, with the source locations a debugger wants
+#   make run     dev loop: build locally, then run it
+#   make all     release matrix (4 targets) + bin/SHA256SUMS
+#   make test    every package that owns a *_test.odin file
+#   make clean   drop bin/ and tmp/
 
-# ── Project config ────────────────────────────────────────
+# ── Project config ───────────────────────────────────────
 
-# entry point package directory
-APP_PKG = src/cmd/gorch
-# binary name
-APP     = gorch
-# binary output directory
-BIN     = bin
-# Odin toolchain and the minimum version this project is written against
+APP_PKG  = src/cmd/gorch
+APP      = gorch
+BIN      = bin
 ODIN     = odin
 MIN_ODIN = dev-2026-10
 
 # oboe (git submodule) supplies the runtime state cache: an in-memory key/value
-# store with an atomic, compressed snapshot on disk. gorch uses it instead of
-# SQLite or pid files. `make deps` fetches it.
+# store with an atomic, compressed snapshot on disk, used instead of SQLite or
+# pid files. `make deps` fetches it.
 OBOE_DIR ?= vendor/oboe
 
 # packages that own at least one *_test.odin file
 TEST_PKGS := $(sort $(patsubst %/,%,$(dir $(wildcard src/lib/*/*_test.odin))))
 
-# The release matrix: both operating systems, both architectures.
-#
-# Only the versions that still receive updates are supported. On macOS that
-# means Big Sur and later, which is also the first release with Apple Silicon;
-# on Linux the binaries are static musl, so they carry no glibc dependency and
-# run on any kernel of the last few years.
+# Release matrix. macOS Big Sur and later, which is also the first release with
+# Apple Silicon; Linux binaries are static musl, so they carry no glibc
+# dependency and run on any kernel of the last few years.
 TARGETS   ?= darwin_arm64 darwin_amd64 linux_arm64 linux_amd64
 MACOS_MIN ?= 11.0.0
 
-# Linux/Windows cannot be linked by Odin itself on this host ("Linking for cross
-# compilation for this platform is not yet supported"), so foreign targets are
-# compiled to objects and linked by a cross toolchain instead — zig cc with
-# static musl, which needs nothing installed on the target machine. Override for
-# CI: make build TARGETS="linux_amd64" CROSS_CC="x86_64-linux-musl-gcc"
+# Odin cannot link a foreign target on this host, so linux targets are compiled
+# to an object and linked by a cross toolchain - zig cc with static musl, which
+# needs nothing installed on the target machine. Override for CI:
+#   make all TARGETS="linux_amd64" CROSS_CC="x86_64-linux-musl-gcc"
 ZIG      ?= zig
 CROSS_CC ?= $(ZIG) cc
 
@@ -58,14 +45,20 @@ ZLIB_DIR  = third_party/zlib
 ZLIB_SRCS = adler32.c compress.c crc32.c deflate.c infback.c inffast.c \
             inflate.c inftrees.c trees.c uncompr.c zutil.c
 
-# ── Build flags ───────────────────────────────────────────
+# ── Build flags ──────────────────────────────────────────
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 # -o:size trades a little speed for a lot of text: it is the difference between
 # a 1.3 MB binary and a 600 KB one, and this program waits on processes rather
 # than on arithmetic.
-ODIN_FLAGS = -o:size -collection:oboe=$(OBOE_DIR)
+#
+# DEFAULT_TEMP_ALLOCATOR_BACKING_SIZE is Odin's per-thread temp arena block, 4
+# MiB by default. Every thread that formats a string once takes a whole block,
+# and the arena never gives it back; 64 KiB is plenty for the paths that use it
+# and keeps a thread's floor at a few pages instead of four megabytes.
+ODIN_DEPS  = -collection:oboe=$(OBOE_DIR)
+ODIN_FLAGS = -o:size $(ODIN_DEPS) -define:DEFAULT_TEMP_ALLOCATOR_BACKING_SIZE=65536
 
 # Release builds drop the file and line table Odin keeps for panic messages:
 # 50 KB for something only a developer with symbols can use. `make one` keeps
@@ -79,20 +72,18 @@ ASSETS_BIN   = src/lib/web/assets.bin
 ASSETS_TABLE = src/lib/web/assets_gen.odin
 WEB_FILES   := $(shell find $(WEB_DIR) -type f ! -name '.*')
 
-# ARM64 micro-architecture baseline for the `arm64` target.
-#   v8.0 (default) — runs on every ARM64 chip; the Go runtime still dispatches
-#                    to AES/SHA/CRC32/LSE at runtime when the CPU exposes them.
-#   v9.0           — emits ARMv9 instructions (post-2021 cores only: Cortex-X2/
-#                    A710+, Neoverse N2/V2, AWS Graviton4, Apple M3 …).
-GOARM64   ?= v8.0
-# `make release` additionally packs the Linux binaries with UPX (upx --brute),
-# writing gorch-<ver>-linux-<arch>.upx next to each plain one.
+# shasum ships with macOS and takes "-a 256"; sha256sum ships with Linux.
+ifneq ($(shell command -v shasum 2>/dev/null),)
+SHASUM = shasum -a 256
+else
+SHASUM = sha256sum
+endif
 
-# ── Targets ───────────────────────────────────────────────
+# ── Targets ──────────────────────────────────────────────
 
-.PHONY: all assets odin-version deps one build release upx-linux linux run test check clean
+.PHONY: all one run test clean deps assets check-deps odin-version
 
-## deps: fetch the oboe submodule (needed before the first build)
+## deps: fetch the oboe submodule (once, before the first build)
 deps:
 	git submodule update --init --recursive
 	@echo "✅ deps ready"
@@ -103,7 +94,16 @@ check-deps:
 		echo "vendor/oboe is missing; run 'make deps' first" >&2; exit 1; \
 	}
 
-## assets: compress web/ into the blob the binary embeds
+## odin-version: refuse to build with an older toolchain
+odin-version:
+	@ver=$$($(ODIN) version 2>/dev/null | head -1 | awk '{print $$NF}' | cut -d: -f1); \
+	if [ -z "$$ver" ]; then echo "odin $(MIN_ODIN)+ is required but $(ODIN) is not in PATH" >&2; exit 1; fi; \
+	if [ "$$(printf '%s\n%s\n' '$(MIN_ODIN)' "$$ver" | sort -V | head -1)" != "$(MIN_ODIN)" ]; then \
+		echo "gorch needs odin >= $(MIN_ODIN), found $$ver" >&2; exit 1; \
+	fi; \
+	echo "odin $$ver ok"
+
+## assets: deflate web/ into the blob the binary embeds
 #
 # gzip writes a container (10-byte header, deflate stream, 8-byte trailer) and
 # the runtime inflates raw deflate, so this strips the wrapper with dd. Keeping
@@ -119,29 +119,27 @@ $(ASSETS_BIN): $(WEB_FILES) tools/embedgen/main.odin
 		dd if=tmp/assets.gz of=$(ASSETS_BIN) bs=1 skip=10 count=$$((size - 18)) 2>/dev/null
 	@printf "  %s: %s bytes of raw deflate\n" $(ASSETS_BIN) "$$(wc -c < $(ASSETS_BIN) | tr -d ' ')"
 
-## all: full pipeline — clean, local build, then the release matrix
-all: clean one build
-
-## odin-version: refuse to build with an older toolchain
-odin-version:
-	@ver=$$($(ODIN) version 2>/dev/null | head -1 | awk '{print $$NF}' | cut -d: -f1); \
-	if [ -z "$$ver" ]; then echo "odin $(MIN_ODIN)+ is required but $(ODIN) is not in PATH" >&2; exit 1; fi; \
-	if [ "$$(printf '%s\n%s\n' '$(MIN_ODIN)' "$$ver" | sort -V | head -1)" != "$(MIN_ODIN)" ]; then \
-		echo "gorch needs odin >= $(MIN_ODIN), found $$ver" >&2; exit 1; \
-	fi; \
-	echo "odin $$ver ok"
-
 ## one: local build, with the source locations a developer wants
 one: odin-version check-deps assets
-	@echo "Build $(APP) (local) ..."
+	@echo "Build $(APP) (local, $(VERSION)) ..."
 	@mkdir -p $(BIN)
-	$(ODIN) build $(APP_PKG) $(ODIN_FLAGS) -out:$(BIN)/$(APP)
+	@$(ODIN) build $(APP_PKG) $(ODIN_FLAGS) -out:$(BIN)/$(APP)
 	@printf "  %s: %s bytes\n" $(BIN)/$(APP) "$$(wc -c < $(BIN)/$(APP) | tr -d ' ')"
 
-## build: compile every release TARGET
-build: odin-version check-deps assets
-	@echo "Compiling $(TARGETS) as $(VERSION) ..."
+## run: dev loop - build locally, then run it
+#
+#   make run                           # ./gorch.toml in the cwd
+#   make run ARGS="-c /tmp/test.toml"  # or any other flags
+run: one
+	@$(BIN)/$(APP) $(ARGS)
+
+## all: local build + the four-target release matrix + bin/SHA256SUMS
+all: odin-version check-deps assets
+	@rm -rf $(BIN)/* tmp/*
 	@mkdir -p $(BIN)
+	@echo "Build $(APP) $(VERSION) ..."
+	@$(ODIN) build $(APP_PKG) $(ODIN_FLAGS) -out:$(BIN)/$(APP)
+	@printf "  %-46s %8s bytes\n" $(BIN)/$(APP) "$$(wc -c < $(BIN)/$(APP) | tr -d ' ')"
 	@for target in $(TARGETS); do \
 		os=$${target%_*}; arch=$${target#*_}; \
 		out=$(BIN)/$(APP)-$(VERSION)-$$os-$$arch; \
@@ -169,58 +167,15 @@ build: odin-version check-deps assets
 		esac; \
 		printf "  %-46s %8s bytes\n" $$out "$$(wc -c < $$out | tr -d ' ')"; \
 	done
-	@cd $(BIN) && if command -v shasum >/dev/null; then shasum -a 256 $(APP)-$(VERSION)-*; \
-		else sha256sum $(APP)-$(VERSION)-*; fi > SHA256SUMS
-	@echo "✅ Build success."
-
-## upx-linux: additionally pack the Linux release binaries with UPX --brute
-#
-# UPX decompresses transparently at load time, so a .upx file is a drop-in
-# replacement for the plain one - just smaller. The original is kept too.
-upx-linux:
-	@for f in $(BIN)/$(APP)-$(VERSION)-linux-*; do \
-		case "$$f" in *.upx) continue;; esac; \
-		[ -f "$$f" ] || continue; \
-		if command -v upx >/dev/null 2>&1; then \
-			echo "UPX $$f ..."; \
-			rm -f "$$f.upx"; \
-			upx --brute -o "$$f.upx" "$$f" || { echo "  upx failed on $$f, skipped" >&2; continue; }; \
-			printf "  %-46s %8s bytes\n" "$$f.upx" "$$(wc -c < $$f.upx | tr -d ' ')"; \
-		else \
-			echo "upx not found; skipping compression of $$f" >&2; \
-		fi; \
-	done
-
-## release: build the matrix, pack the Linux binaries, and print what it produced
-release: build upx-linux
-	@cd $(BIN) && if command -v shasum >/dev/null; then shasum -a 256 $(APP)-$(VERSION)-*; \
-		else sha256sum $(APP)-$(VERSION)-*; fi > SHA256SUMS
+	@cd $(BIN) && $(SHASUM) $(APP)-$(VERSION)-* > SHA256SUMS
 	@echo
 	@cat $(BIN)/SHA256SUMS
-
-## linux: static musl release for both Linux architectures
-linux: odin-version
-	@$(MAKE) --no-print-directory build TARGETS="linux_amd64 linux_arm64"
-
-## run: build and run the supervisor
-run: odin-version assets
-	$(ODIN) run $(APP_PKG) -collection:oboe=$(OBOE_DIR)
 
 ## test: run the tests of every package that has them
 test: check-deps
 	@for pkg in $(TEST_PKGS); do \
-		echo "--- $$pkg" && $(ODIN) test $$pkg -collection:oboe=$(OBOE_DIR) || exit 1; \
+		echo "--- $$pkg" && $(ODIN) test $$pkg $(ODIN_DEPS) || exit 1; \
 	done
-
-## check: type check every package; `odin check` errors other than the missing
-#  entry point (library packages have no main) fail the target
-check: check-deps
-	@fail=0; for pkg in $(sort $(dir $(wildcard src/cmd/*/*.odin src/lib/*/*.odin))); do \
-		errs=$$($(ODIN) check $$pkg -collection:oboe=$(OBOE_DIR) 2>&1 | grep 'Error:' | grep -v "Undefined entry point procedure 'main'"); \
-		if [ -n "$$errs" ]; then echo "--- $$pkg"; echo "$$errs"; fail=1; fi; \
-	done; \
-	if [ $$fail -eq 1 ]; then echo "❌ check failed" >&2; exit 1; fi; \
-	echo "✅ check clean."
 
 ## clean: remove build artifacts
 clean:

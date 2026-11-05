@@ -6,6 +6,17 @@ const SSE_OPTIONS = ['5s', '1m', '15m']
 
 const DONE_KEY = { start: 'started', stop: 'stopped', restart: 'restarted' }
 
+const ACTIONS = {
+  start: startService,
+  stop: stopService,
+  restart: restartService,
+}
+
+function runAction(action, name) {
+  const call = ACTIONS[action]
+  return call ? call(name) : Promise.reject(new Error(`unknown action: ${action}`))
+}
+
 export function dashboardView() {
   return {
     uptimeMode: 'elapsed',
@@ -39,15 +50,22 @@ export function dashboardView() {
       return `/logs?service=${encodeURIComponent(name)}`
     },
 
+    /** Start/Stop/Restart: apply the state the server answered with, then keep
+     *  the card in sync until the transition finishes. The button stays busy
+     *  for that whole window, so a stop that has to wait out SIGTERM does not
+     *  look like a click that was ignored. */
     async act(action, name) {
       this.pending[name] = true
       try {
-        if (action === 'start') await startService(name)
-        else if (action === 'stop') await stopService(name)
-        else await restartService(name)
+        const result = await runAction(action, name)
+        if (!result.success) {
+          showToast(result.message || this.$data.t('service.failedAction', { action, name }), 'error')
+          return
+        }
 
         showToast(this.$data.t(`service.${DONE_KEY[action]}`, { name }))
-        await this.$data.refreshServices()
+        this.$data.applyStatus(result.data)
+        await this.$data.settleService(name)
       } catch {
         showToast(this.$data.t('service.failedAction', { action, name }), 'error')
       } finally {

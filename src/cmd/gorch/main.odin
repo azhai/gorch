@@ -7,12 +7,12 @@ package main
 // serves the SPA plus the whole API. Still only in the Go implementation on the
 // `main` branch: log IPC.
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
-import "core:thread"
 import "core:time"
 
 import cfg "../../lib/config"
@@ -23,6 +23,7 @@ import status "../../lib/status"
 import supervisor "../../lib/supervisor"
 import "../../lib/totp"
 import web "../../lib/web"
+import worker "../../lib/worker"
 
 USAGE :: `gorch - process supervisor
 
@@ -135,7 +136,10 @@ main :: proc() {
 			static_dir = resolve_static_dir(&config),
 			provider   = provider,
 		}
-		thread.create_and_start_with_poly_data(serve_args, serve_thread, context, .Normal, true)
+		if !worker.spawn(serve_entry, serve_args) {
+			glog.error("cannot start the web server thread")
+			sync.atomic_store(&halt, 1)
+		}
 	} else {
 		glog.warn("WEB_ENABLE is false, running without the dashboard")
 	}
@@ -292,6 +296,14 @@ serve_thread :: proc(args: ^Serve_Args) {
 		glog.error("web server failed", "err", serr)
 		sync.atomic_store(&halt, 1)
 	}
+}
+
+// serve_entry is the pthread body; serve_args lives for the whole process.
+serve_entry :: proc "c" (arg: rawptr) -> rawptr {
+	context = runtime.default_context()
+	serve_thread((^Serve_Args)(arg))
+	worker.leave()
+	return nil
 }
 
 // ---- helpers ----

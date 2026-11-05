@@ -116,7 +116,10 @@
                              right, so every card has the same second entry point. -->
                         <div class="md-row md-row--between md-row--tight">
                           <div class="md-row md-row--tight">
-                            <template x-if="svc.status !== 'running'">
+                            <!-- Start only makes sense when there is no process
+                                 at all: during "stopping" the old one is still
+                                 alive, so starting it would be a no-op. -->
+                            <template x-if="svc.status !== 'running' && svc.status !== 'stopping'">
                               <button
                                 class="md-btn md-btn--tonal md-btn--sm"
                                 :disabled="isPending(svc.name)"

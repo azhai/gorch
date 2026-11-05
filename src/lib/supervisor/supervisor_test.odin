@@ -112,6 +112,11 @@ test_start_stop_lifecycle :: proc(t: ^testing.T) {
 	pid := s.pid
 
 	testing.expect(t, stop(sv, "t_sleeper") == "")
+	// The action returns before the child is reaped, so the status has to say
+	// "on its way down" now - the web API reads this field straight after the
+	// POST, and answering `running` made Stop look like it did nothing.
+	testing.expect_value(t, s.status, status.Status.Stopping)
+	testing.expect(t, s.pid == pid, "a stopping process keeps its pid until it exits")
 	testing.expect(t, wait_for(sv, "t_sleeper", .Stopped, 100), "service should stop")
 	testing.expect(t, s.pid == 0, "pid must be cleared after reaping")
 	testing.expect(t, !alive(pid), "process must be gone")

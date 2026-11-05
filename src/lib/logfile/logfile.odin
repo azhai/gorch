@@ -12,6 +12,11 @@ import "core:os"
 // Reading the end of a multi-megabyte log must not cost a multi-megabyte read,
 // so the tail window starts small and doubles until it holds enough lines.
 TAIL_CHUNK :: 32 * 1024
+// ...but it stops here. A log with no newline in it at all - a service dumping
+// one huge line, or a binary written to the wrong path - would otherwise double
+// the window up to the size of the file and put the whole thing in memory for a
+// single /logs request. At the cap the caller simply gets fewer lines.
+TAIL_MAX_WINDOW :: 4 * 1024 * 1024
 MAX_LINES :: 5000
 
 // Tail is a window over the end of a file. The lines are subslices of `buf`, so
@@ -70,9 +75,10 @@ tail :: proc(path: string, max_lines: int) -> (Tail, string) {
 			return {}, fmt.aprintf("cannot read {}: {}", path, rerr)
 		}
 		used = n
-		// Keep growing until the window starts at byte 0 or holds more
-		// separators than we need, so the cut lands on a line boundary.
-		if size-window == 0 || count_newlines(buf[:n]) > max_lines {
+		// Keep growing until the window starts at byte 0, holds more
+		// separators than we need, or hits the cap, so the cut lands on a
+		// line boundary without ever reading an unbounded amount.
+		if size-window == 0 || count_newlines(buf[:n]) > max_lines || window >= TAIL_MAX_WINDOW {
 			break
 		}
 		delete(buf)

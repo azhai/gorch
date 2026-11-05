@@ -50,13 +50,16 @@ make one                 # build ./bin/gorch for this machine
 For release artifacts of macOS / Linux × arm64 / amd64:
 
 ```sh
-make build                                   # four targets + bin/SHA256SUMS
-make build TARGETS="linux_arm64"             # one target
-make build CROSS_CC="x86_64-linux-musl-gcc"  # override the cross linker (default: zig cc)
-make release                                 # build + pack Linux binaries with upx --brute
+make all                                     # local + four targets + bin/SHA256SUMS
+make all TARGETS="linux_arm64"               # a single target only
+make all CROSS_CC="x86_64-linux-musl-gcc"    # override the cross linker (default: zig cc)
+make run                                     # dev loop: build locally, then start it
+make test                                    # every package that has tests
 ```
 
-The full matrix is meant to be built on macOS: darwin targets link natively, linux targets are cross-linked with `zig cc` + static musl plus the vendored minimal zlib in `third_party/zlib`; a native build uses the system zlib. On a Linux host, build only the `linux_*` targets. `make release` additionally writes `gorch-<version>-linux-<arch>.upx` next to the plain binaries when `upx` is installed — UPX unpacks transparently at load time, so a `.upx` file is a drop-in replacement. GitHub tags carry source archives only; binaries are produced by these `make` targets (or copied from a `bin/` you already built).
+The full matrix is meant to be built on macOS: darwin targets link natively, linux targets are cross-linked with `zig cc` + static musl plus the vendored minimal zlib in `third_party/zlib`; a native build uses the system zlib. On a Linux host, build only the `linux_*` targets. GitHub tags carry source archives only; binaries are produced by these `make` targets (or copied from a `bin/` you already built).
+
+Nothing is UPX-packed: UPX unpacks the whole image into anonymous, writable memory, which can neither be shared with the page cache nor dropped under memory pressure. On a router, take the plain binary (about 630 KB for arm64; the filesystem cache keeps it warm anyway). Running `upx --brute bin/gorch-v0.5.1-linux-arm64` by hand still works if you want the smaller file.
 
 ### 2. Put the binary on the target
 
@@ -69,7 +72,7 @@ sudo install -m 755 gorch-v0.4.5-linux-amd64 /usr/local/bin/gorch
 gorch --help
 ```
 
-Use `gorch-v0.4.5-linux-amd64.upx` instead if you want the smaller UPX-packed build. If the binary lives somewhere else, pass `--bin PATH` to `gorch-install` or set `GORCH_BIN`.
+A `.upx` build you packed by hand also runs, but it is not recommended on memory-constrained devices. If the binary lives somewhere else, pass `--bin PATH` to `gorch-install` or set `GORCH_BIN`.
 
 ### 3. Install as a system service
 

@@ -1,10 +1,10 @@
 package supervisor
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
-import "core:thread"
 import "core:time"
 
 import "../../lib/config"
@@ -13,6 +13,7 @@ import glog "../../lib/log"
 import "../../lib/logfile"
 import "../../lib/state"
 import "../../lib/status"
+import "../../lib/worker"
 
 // A supervisor for *external processes*. The unit of supervision is a PID: gorch
 // forks the command from EXEC_CMD, reaps it with waitpid, and applies the restart
@@ -256,10 +257,12 @@ stop_all :: proc(sv: ^Supervisor) {
 		}
 		s.want_running = false
 		if s.pid > 0 {
+			s.status = .Stopping
 			signal(s.pid, .SIGTERM)
 			s.kill_at = now + STOP_GRACE
 		}
 		if s.cron_pid > 0 {
+			s.status = .Stopping
 			signal(s.cron_pid, .SIGTERM)
 		}
 	}
@@ -300,6 +303,11 @@ start :: proc(sv: ^Supervisor, name: string) -> string {
 
 // stop sends SIGTERM and schedules SIGKILL after the grace period; the exit is
 // observed by the loop, so this never blocks on the child.
+//
+// The status turns Stopping right here rather than when the exit is reaped: the
+// caller returns to the UI immediately, and an API read a millisecond later has
+// to agree that the service is on its way down instead of still reporting
+// `running` for as long as the next poll takes.
 stop :: proc(sv: ^Supervisor, name: string) -> string {
 	sync.rw_mutex_lock(&sv.mu)
 	defer sync.rw_mutex_unlock(&sv.mu)
@@ -312,11 +320,13 @@ stop :: proc(sv: ^Supervisor, name: string) -> string {
 	if is_scheduled(s) {
 		// Stop the run that is in flight; the next scheduled fire picks up.
 		if s.cron_pid > 0 {
+			s.status = .Stopping
 			signal(s.cron_pid, .SIGTERM)
 		}
 		return ""
 	}
 	if s.pid > 0 {
+		s.status = .Stopping
 		signal(s.pid, .SIGTERM)
 		s.kill_at = now_seconds(sv) + STOP_GRACE
 	} else {
@@ -339,6 +349,7 @@ restart :: proc(sv: ^Supervisor, name: string) -> string {
 		// A scheduled service has no resident process to restart: end the run
 		// that is in flight and let the schedule decide when the next one is.
 		if s.cron_pid > 0 {
+			s.status = .Stopping
 			signal(s.cron_pid, .SIGTERM)
 		}
 		sync.rw_mutex_unlock(&sv.mu)
@@ -358,6 +369,9 @@ restart :: proc(sv: ^Supervisor, name: string) -> string {
 	s.want_running = true
 	s.restarting = true
 	if s.pid > 0 {
+		// Same reasoning as stop: the old process is still alive for a poll or
+		// two, but it is already on its way out, and the card must say so.
+		s.status = .Stopping
 		signal(s.pid, .SIGTERM)
 		s.kill_at = now_seconds(sv) + STOP_GRACE
 	} else {
@@ -382,9 +396,12 @@ snapshot :: proc(sv: ^Supervisor) -> []status.ServiceStatus {
 			started_at = s.started_at,
 		}
 		// A scheduled run in flight is what the dashboard should see, even
-		// though the service itself has no resident pid.
+		// though the service itself has no resident pid - unless that run is
+		// being stopped, which outranks "it is running right now".
 		if s.cron_pid > 0 {
-			ss.status = .Running
+			if s.status != .Stopping {
+				ss.status = .Running
+			}
 			ss.pid = s.cron_pid
 			if s.cron_started > 0 {
 				ss.started_at = s.cron_started
@@ -396,12 +413,18 @@ snapshot :: proc(sv: ^Supervisor) -> []status.ServiceStatus {
 		// Only a live process has an age. Without this, a stopped service kept
 		// displaying the uptime it had before it exited, because started_at is
 		// retained for state recovery.
-		if ss.pid <= 0 || (ss.status != .Running && ss.status != .Starting) {
+		if ss.pid <= 0 || !status.has_process(ss.status) {
 			ss.started_at = 0
 		}
 		if s.exit_code != 0 || s.status == .Crashed || s.status == .Failed {
-			code := s.exit_code
-			ss.exit_code = &code
+			// `&code` on a local here is a dangling pointer: snapshot returns
+			// before anyone formats the value, and the frame it pointed into is
+			// reused by then (the result was exit codes like 2449958201634562824).
+			// The rest of the snapshot already lives in the caller's arena, so
+			// the exit code goes there too.
+			code := new(int)
+			code^ = s.exit_code
+			ss.exit_code = code
 		}
 		status.compute_uptime(&ss)
 		out[i] = ss
@@ -974,8 +997,19 @@ spawn_loop :: proc(sv: ^Supervisor) -> ^Loop {
 	l := new(Loop)
 	l.sv = sv
 	cron.start(sv.cron_sched)
-	thread.create_and_start_with_poly_data(l, loop_run, context, .Normal, true)
+	if !worker.spawn(loop_entry, rawptr(l)) {
+		glog.error("cannot start the supervisor loop thread")
+		sync.atomic_store(&l.halted, 1)
+	}
 	return l
+}
+
+// loop_entry is the pthread body; `l` lives as long as the process does.
+loop_entry :: proc "c" (arg: rawptr) -> rawptr {
+	context = runtime.default_context()
+	loop_run((^Loop)(arg))
+	worker.leave()
+	return nil
 }
 
 // halt_loop asks the loop to return; the caller still owns the Supervisor.

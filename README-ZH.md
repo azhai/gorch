@@ -48,13 +48,16 @@ make one                 # 构建本机版本 ./bin/gorch
 构建 macOS / Linux × arm64 / amd64 的发布产物：
 
 ```sh
-make build                                   # 四个目标 + bin/SHA256SUMS
-make build TARGETS="linux_arm64"             # 单个目标
-make build CROSS_CC="x86_64-linux-musl-gcc"  # 覆盖交叉链接器（默认 zig cc）
-make release                                 # build + 用 upx --brute 压缩 Linux 产物
+make all                                     # 本机 + 四个目标 + bin/SHA256SUMS
+make all TARGETS="linux_arm64"               # 只构建单个目标
+make all CROSS_CC="x86_64-linux-musl-gcc"    # 覆盖交叉链接器（默认 zig cc）
+make run                                     # 开发模式：本机构建后直接启动
+make test                                    # 跑所有带测试的包
 ```
 
-完整矩阵应在 macOS 上构建：darwin 目标原生链接，linux 目标用 `zig cc` + 静态 musl 交叉链接，并带上 `third_party/zlib` 的精简 zlib 源码；本机构建直接用系统 zlib。在 Linux 主机上只构建 `linux_*` 目标。安装了 `upx` 时，`make release` 还会在普通二进制旁生成 `gorch-<版本>-linux-<架构>.upx`，UPX 在加载时透明解压，可直接替换使用。GitHub 的 tag 只附源码压缩包，二进制由上述 `make` 目标生成（或直接复用已构建好的 `bin/` 产物）。
+完整矩阵应在 macOS 上构建：darwin 目标原生链接，linux 目标用 `zig cc` + 静态 musl 交叉链接，并带上 `third_party/zlib` 的精简 zlib 源码；本机构建直接用系统 zlib。在 Linux 主机上只构建 `linux_*` 目标。GitHub 的 tag 只附源码压缩包，二进制由上述 `make` 目标生成（或直接复用已构建好的 `bin/` 产物）。
+
+构建流程**不产出 UPX 版本**：UPX 把整个镜像解压到匿名可写内存，这些页既不能和 page cache 共享，也不会在内存压力下被回收。路由器这类内存紧张的目标请直接用普通二进制（arm64 约 630 KB，文件缓存会一直热着）。确实需要更小体积时，可以自己执行 `upx --brute bin/gorch-v0.5.1-linux-arm64`。
 
 ### 2. 部署二进制
 
@@ -67,7 +70,7 @@ sudo install -m 755 gorch-v0.4.5-linux-amd64 /usr/local/bin/gorch
 gorch --help
 ```
 
-想用更小的体积，把文件名换成 `gorch-v0.4.5-linux-amd64.upx` 即可。二进制放在别处时，用 `gorch-install --bin PATH` 或环境变量 `GORCH_BIN` 指定。
+自己手动压缩出的 `.upx` 版本也能跑（内存受限的设备不建议）。二进制放在别处时，用 `gorch-install --bin PATH` 或环境变量 `GORCH_BIN` 指定。
 
 ### 3. 安装为系统服务
 

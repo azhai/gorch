@@ -65,11 +65,42 @@ long-lived SSE stream never blocks the dashboard. It serves the SPA, injects
 `window.__URL_PREFIX__` for sub-path deployments, exposes the REST API and
 SSE, and handles JWT login and TOTP 2FA.
 
+`/api/events` pushes a `status_change` for every service whose state differs
+from the previous round, then one `uptime_tick` with the live pid, memory and
+start time of whatever is running; both carry a `payload` object, which is what
+the SPA's `applyMessage` reads. Every round allocates from a scratch arena that
+is emptied first, so a stream left open for weeks does not grow the process.
+
+`POST /api/services/<name>/start|stop|restart` answers with the service as it
+stands after the call, so the dashboard repaints from the reply itself. Stop and
+Restart mark the service `stopping` immediately — SIGTERM is in flight and the
+exit is only observed on the next poll — and the SPA keeps polling that one
+service for up to two seconds until the state is final; an SSE frame can be a
+minute away on the slow intervals.
+
 The frontend is plain ES modules plus a vendored Alpine build — no bundler.
 `tools/embedgen` packs `web/` into a single raw-deflate blob (`assets.bin`)
 plus an index table; the server inflates it once at startup. A `web/` directory
 next to the config overrides the embedded copy file by file, so frontend edits
 take effect without a rebuild.
+
+### Memory and threads (`src/lib/worker`, `web`)
+
+Every long-lived thread — the supervisor loop, the cron loop, cron fires and
+the web listener — is a detached pthread we create ourselves with a fixed
+512 KiB stack. `core:thread` sizes the stack from RLIMIT_STACK, which is 8 MiB
+on glibc, musl and Darwin alike; a couple of dashboard tabs then reserve tens of
+megabytes of address space, which is a real constraint on a 256 MiB router. Each
+connection also gets its own thread and a 64 KiB request arena, so everything a
+request allocates (including `fmt.tprintf` temporaries) dies with the connection
+instead of going through the shared heap.
+
+The logger formats every record into one process-wide buffer instead of taking
+256 bytes per line from `context.temp_allocator` — a thread-local, append-only
+arena that would otherwise push RSS up a line at a time for as long as the
+process runs. The build also lowers `DEFAULT_TEMP_ALLOCATOR_BACKING_SIZE` from
+its 4 MiB default to 64 KiB, so any path still using the temp arena starts at a
+few pages.
 
 ### Auth (`src/lib/jwt`, `totp`, `qr`)
 
@@ -86,6 +117,7 @@ generation.
 | `src/lib/config`, `toml`, `json` | Config structs and hand-written parsers |
 | `src/lib/state`, `status` | oboe cache snapshots and status records |
 | `src/lib/cron`, `logfile`, `log` | Cron expressions, log rotation, internal logging |
+| `src/lib/worker` | Long-lived threads (detached pthreads with a 512 KiB stack) |
 | `src/lib/jwt`, `totp`, `qr`, `paths` | Auth, 2FA, default paths |
 | `web/` | Alpine SPA (Material 3 Monet); served as-is, no bundler |
 | `tools/embedgen` | Packs `web/` into `src/lib/web/assets.bin` + `assets_gen.odin` |
@@ -95,11 +127,15 @@ generation.
 
 ## Build
 
-`make one` builds the local binary; `make release` builds the four-target
-matrix (darwin/linux × arm64/amd64) and UPX-packs the two Linux binaries.
-macOS links natively (macOS 11+); Linux compiles to an object file and links
-with `zig cc` against static musl plus the vendored zlib. Release builds use
-`-o:size` and strip symbols. `VERSION` comes from `git describe`.
+`make one` builds the local binary, `make run` builds it and starts it, and
+`make all` builds the local binary plus the four-target matrix (darwin/linux ×
+arm64/amd64) and writes `bin/SHA256SUMS`. macOS links natively (macOS 11+);
+Linux compiles to an object file and links with `zig cc` against static musl
+plus the vendored zlib. Release builds use `-o:size`, strip symbols, and set the
+default temp-arena block to 64 KiB. `VERSION` comes from `git describe`. There
+is no UPX target: the packed image is unpacked into anonymous writable memory,
+so its pages can be neither shared with the page cache nor reclaimed under
+memory pressure.
 
 ## Tech Stack
 
@@ -108,5 +144,5 @@ with `zig cc` against static musl plus the vendored zlib. Release builds use
 - **oboe:cache** — compressed, atomically snapshotted state store (vendored submodule)
 - **zlib** — vendored minimal sources for static Linux linking
 - **Alpine.js 3 + Material 3 (Monet) + ES modules** — Web UI, no build step
-- **UPX** — optional `--brute` packing of Linux release binaries
+- **UPX** — not used: the packed image cannot share page-cache pages, which hurts on memory-constrained targets
 - **systemd / launchd** — service supervision via `scripts/gorch-*`

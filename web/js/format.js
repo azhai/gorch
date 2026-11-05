@@ -4,6 +4,7 @@ export const STATUS_CLASS = {
   failed: 'md-status-dot--failed',
   crashed: 'md-status-dot--crashed',
   starting: 'md-status-dot--starting',
+  stopping: 'md-status-dot--stopping',
 }
 
 /** `now` is passed in (not read from Date) so Alpine tracks it as a dependency. */

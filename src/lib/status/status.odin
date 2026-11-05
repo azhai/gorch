@@ -4,12 +4,22 @@ import "core:time"
 import "core:sync"
 
 // Status codes mirror the Go StatusCode values.
+//
+// Stopping is appended rather than inserted so the ordinals of the older
+// values stay put: state.Record stores the ordinal as a raw byte, and a state
+// file written by an older build must still decode.
 Status :: enum {
 	Starting,
 	Running,
 	Stopped,
 	Failed,
 	Crashed,
+	// Stopping is the window between "the operator asked for this to stop" and
+	// "the process is actually gone". The supervisor cannot shrink that window:
+	// SIGTERM has to be sent, and the exit is only observed on the next poll.
+	// Without a status for it, an API read straight after Stop still answered
+	// `running`, and the dashboard looked like the click had done nothing.
+	Stopping,
 }
 
 status_to_string :: proc(s: Status) -> string {
@@ -19,8 +29,16 @@ status_to_string :: proc(s: Status) -> string {
 	case .Stopped:  return "stopped"
 	case .Failed:   return "failed"
 	case .Crashed:  return "crashed"
+	case .Stopping: return "stopping"
 	}
 	return "stopped"
+}
+
+// has_process reports whether the status still refers to a live child. A
+// stopping process is alive until its exit is reaped, so it keeps its pid,
+// its memory figure and its age.
+has_process :: proc(s: Status) -> bool {
+	return s == .Running || s == .Starting || s == .Stopping
 }
 
 ServiceStatus :: struct {
@@ -48,18 +66,24 @@ cache_init :: proc(c: ^Cache) {
 // not been located yet, or one that exited and is between restarts); displaying
 // an age for it would be a lie, so has_uptime stays false and the API sends
 // null. The UI renders that as a dash.
+//
+// A stopping service still has an age: its child is alive until SIGTERM lands,
+// and dropping the figure mid-teardown makes the card flicker from "3h 12m" to
+// "-" a moment before it reads "stopped".
 compute_uptime :: proc(ss: ^ServiceStatus) {
 	ss.has_uptime = false
-	if ss.status == .Running && ss.pid > 0 && ss.started_at > 0 {
-		now := time.to_unix_seconds(time.now())
-		ss.uptime = now - ss.started_at
-		if ss.uptime < 0 {
-			ss.uptime = 0
+	if ss.status == .Running || ss.status == .Stopping {
+		if ss.pid > 0 && ss.started_at > 0 {
+			now := time.to_unix_seconds(time.now())
+			ss.uptime = now - ss.started_at
+			if ss.uptime < 0 {
+				ss.uptime = 0
+			}
+			ss.has_uptime = true
+			return
 		}
-		ss.has_uptime = true
-	} else {
-		ss.uptime = 0
 	}
+	ss.uptime = 0
 }
 
 // update replaces the stored status for a service (computing uptime).

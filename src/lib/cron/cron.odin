@@ -5,18 +5,19 @@ import "core:fmt"
 import "core:mem"
 import "core:time"
 import "core:sync"
-import "core:thread"
 import "core:strings"
+
+import "../../lib/worker"
 
 // NOTE(threading): @(test) procs run with a NON-thread-safe per-test arena as
 // the default allocator. The scheduler spawns worker threads (run_due ->
-// thread.run_with_data) that allocate/free through the ambient context and
-// mutate the Scheduler's maps. To avoid corrupting that arena (SIGABRT), every
-// allocation that can be touched from a worker thread is pinned to the
-// thread-safe global heap allocator via `context.allocator =
-// runtime.default_allocator()` at the top of new_scheduler, run_due and
-// fire_dispatch. (Odin's `context` is copied per proc call, so this must be set
-// inline in each proc rather than via a helper proc.)
+// worker.spawn) that allocate/free through the ambient context and mutate the
+// Scheduler's maps. To avoid corrupting that arena (SIGABRT), every allocation
+// that can be touched from a worker thread is pinned to the thread-safe global
+// heap allocator via `context.allocator = runtime.default_allocator()` at the
+// top of new_scheduler, run_due and fire_dispatch. (Odin's `context` is copied
+// per proc call, so this must be set inline in each proc rather than via a
+// helper proc.)
 
 // ---------------------------------------------------------------------------
 // Public types mirror the Go cron.Scheduler surface used by the supervisor:
@@ -82,7 +83,6 @@ Scheduler :: struct {
 	loop_mu:        sync.Mutex,
 	started:        bool,
 	stop_requested: bool,
-	loop_thread:    ^thread.Thread,
 	wg:             sync.Wait_Group,
 
 	// now_fn returns the current wall clock in unix seconds (test override).
@@ -671,7 +671,9 @@ start :: proc(s: ^Scheduler) {
 	}
 	s.started = true
 	s.stop_requested = false
-	s.loop_thread = thread.create_and_start_with_data(rawptr(s), run_loop_fn, nil, .Normal, true, "cron-loop")
+	if !worker.spawn(loop_entry, rawptr(s)) {
+		s.started = false
+	}
 }
 
 // stop halts the run loop and waits for in-flight jobs.
@@ -701,6 +703,14 @@ run_loop_fn :: proc(p: rawptr) {
 	}
 }
 
+// loop_entry is the pthread body; the scheduler outlives the loop.
+loop_entry :: proc "c" (arg: rawptr) -> rawptr {
+	context = runtime.default_context()
+	run_loop_fn(arg)
+	worker.leave()
+	return nil
+}
+
 // run_due fires every job whose next time has arrived, then reschedules.
 // Missed occurrences collapse into a single catch-up run.
 run_due :: proc(s: ^Scheduler, now: i64) {
@@ -726,7 +736,13 @@ run_due :: proc(s: ^Scheduler, now: i64) {
 		arg := new(Fire_Arg)
 		arg.s = s
 		arg.j = j
-		thread.run_with_data(rawptr(arg), fire_dispatch)
+		// One thread per fire, but a fire is a fork-and-wait: it needs no more
+		// stack than the loop does, and it must not inherit the loop's context
+		// (its temp allocator belongs to the loop thread).
+		if !worker.spawn(fire_entry, rawptr(arg)) {
+			free(arg)
+			sync.wait_group_done(&s.wg)
+		}
 	}
 	delete(due)
 }
@@ -734,6 +750,13 @@ run_due :: proc(s: ^Scheduler, now: i64) {
 Fire_Arg :: struct {
 	s: ^Scheduler,
 	j: ^Job,
+}
+
+fire_entry :: proc "c" (p: rawptr) -> rawptr {
+	context = runtime.default_context()
+	fire_dispatch(p)
+	worker.leave()
+	return nil
 }
 
 fire_dispatch :: proc(p: rawptr) {
