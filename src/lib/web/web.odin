@@ -219,7 +219,12 @@ handle_conn :: proc(args: Conn_Args) {
 	conn := args.conn
 	defer net.close(conn)
 
-	buf: [8192]u8
+	// The request bytes are turned into a `string` and handed to handle_request,
+	// which parses them but never keeps the reference past the call. A stack
+	// array would make that a borrow of stack memory and trip the compiler's
+	// escape warning; allocating from the connection arena keeps the buffer
+	// valid for the whole connection and silences it.
+	buf := make([]u8, 8192, context.allocator)
 	total := 0
 	header_end := -1
 	for total < len(buf) {
