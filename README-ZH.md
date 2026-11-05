@@ -253,7 +253,9 @@ gorch 启动时会创建 `/tmp/gorch` 及其 `logs/` 子目录。除非用 `LOG_
 
 Odin 版没有 Unix socket、supervisor PID 文件，也没有 CLI 与 supervisor 的 IPC——
 服务控制走 Web 界面和 REST API。全局 `PID_FILE`、`SERVICES_LOCK` 两个键仍会被
-接受（兼容旧配置），但不再使用。
+接受（兼容旧配置），但不再使用。**服务级** `PID_FILE` 则会生效：命令 daemon 化
+（nginx/angie）时，gorch 读取它来定位真正的 master；未配置时则按可执行名寻找被
+init 收养的同名进程。pid 未知的服务，API 返回 `"uptime": null`，仪表盘显示横线。
 
 > **注意：** `/tmp` 在系统重启后会被清空（macOS 还会定期清理），因此日志不会保留。如需长期保存，请把 `LOG_DIR` 指向持久化目录。
 

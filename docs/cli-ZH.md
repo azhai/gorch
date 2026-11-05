@@ -136,4 +136,6 @@ curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
 curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
 ```
 
+pid 未知的服务没有运行时长：`uptime` 为 `null`、`startedAt` 为 `0`，仪表盘会显示横线。
+
 若配置了 `URL_PREFIX = "/gorch"`，请加上前缀（`/gorch/api/services`）。

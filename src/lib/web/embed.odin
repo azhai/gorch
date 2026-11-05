@@ -24,7 +24,7 @@ embedded_assets :: proc() -> map[string][]byte {
 		ASSET_BLOB,
 		&buf,
 		raw = true,
-		expected_output_size = ASSET_SIZE,
+		size_unpacked = ASSET_SIZE,
 	)
 	if err != nil {
 		// A damaged blob is a build error, not a runtime one: say so once and

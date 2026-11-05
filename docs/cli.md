@@ -142,4 +142,7 @@ curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
 curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
 ```
 
+A service without a live pid has no age: `uptime` is `null` and `startedAt` is
+`0`, which the dashboard renders as a dash.
+
 With `URL_PREFIX = "/gorch"`, prepend the prefix (`/gorch/api/services`).

@@ -19,16 +19,19 @@ Use `-c /path/to/config.toml` to point at a specific file.
 | `PID_FILE` | `/tmp/gorch/gorch.pid` | Compatibility field — parsed and saved back, but no PID file is written |
 | `SERVICES_LOCK` | `/tmp/gorch/gorch-services.lock` | Compatibility field — parsed and saved back, but no lock file is written |
 
-### Compatibility Fields (Not Applied)
+### Global Compatibility Fields (Not Applied)
 
-The Odin rewrite kept these keys so existing `gorch.toml` files and the Web
-config editor still load and round-trip them, but no runtime code consumes them:
+The Odin rewrite kept these global keys so existing `gorch.toml` files and the
+Web config editor still load and round-trip them, but no runtime code consumes
+them:
 
 | Field | What the Go version did | In the Odin build |
 |-------|-------------------------|-------------------|
 | `PID_FILE` (global) | supervisor PID file | nothing is written |
 | `SERVICES_LOCK` | pid list for adopting processes across restarts | nothing is written; state lives in the oboe cache snapshot `gorch.state` |
-| `PID_FILE` (service) | daemon PID file used to find the real master | not read when spawning |
+
+The **service-level** `PID_FILE` is different: it is read to locate a daemonized
+master — see [Daemon Master PID](#daemon-master-pid).
 
 `CHECK_PORT`, `ENV_VARS` and `DEPENDS_ON` are fully implemented — see
 [Dependency Order](#dependency-order-depends_on),
@@ -76,7 +79,7 @@ Non-regular targets such as `/dev/null` or a named pipe are never rotated.
 | `BACK_OFF` | No | `0` (falls back to `5`) | Seconds to wait before a restart attempt |
 | `PRE_ACTION` | No | — | Shell command run via `/bin/sh -c` before start; 15 s timeout, failure only warns |
 | `CHECK_PORT` | No | `0` (off) | Before each start, clear foreign listeners on this TCP port — see Port Pre-flight |
-| `PID_FILE` | No | — | Compatibility field, not applied |
+| `PID_FILE` | No | — | PID file of a daemonized master (e.g. `/var/run/nginx.pid`); read for up to 5 s after start — see Daemon Master PID |
 | `STDOUT` | No | `LOG_DIR/<name>.out.log` | Stdout log file path |
 | `STDERR` | No | `LOG_DIR/<name>.err.log` | Stderr log file path |
 | `DEPENDS_ON` | No | `[]` | Services that must start first; controls boot and stop order — see Dependency Order |
@@ -92,9 +95,28 @@ When a service starts (or restarts), gorch runs the following steps in order:
 2. **CHECK_PORT** — if set and the port is occupied, kill foreign listeners on it.
 3. **Log files** — `STDOUT` / `STDERR` are opened in append mode and handed to the child as its file descriptors.
 4. **EXEC_CMD** — launched with `/bin/sh -c` and `ENV_VARS` applied. A plain command (no shell metacharacters) is prefixed with `exec`, so the pid gorch tracks is the service itself; commands are capped at 1024 bytes.
+5. **Daemon master** — for up to 5 s, look for the real master of a daemonized command through `PID_FILE` or by executable name (see below).
 
 `RESTART_CMD` and one-shot `CRON` runs also receive `ENV_VARS`; a cron run
 performs the same CHECK_PORT pre-flight before it starts.
+
+### Daemon Master PID
+
+nginx and angie daemonize: the process gorch starts forks a master and exits, so
+the launched pid is not the one serving traffic. For up to 5 seconds after a
+start, gorch looks for the real master:
+
+1. **`PID_FILE`**, when set. This also catches a daemon that keeps its original
+   parent alive (angie), because the file is polled while the child is still
+   running.
+2. Otherwise **`pgrep -x`** for the executable name in `EXEC_CMD`. A candidate
+   reparented to init (PPID 1) wins; a single unambiguous match is accepted.
+   PIDs owned by another service, and gorch's own pid, are never adopted.
+
+Tracking switches to the master and the old child is reaped as usual;
+`started_at` is kept, so uptime counts from the launch. A service whose pid is
+unknown has no uptime: the API returns `"uptime": null` and the dashboard shows
+a dash.
 
 ### Dependency Order (DEPENDS_ON)
 

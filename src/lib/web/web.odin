@@ -462,15 +462,27 @@ services_json :: proc(srv: ^Server) -> string {
 write_service_json :: proc(b: ^strings.Builder, ss: status.ServiceStatus) {
 	strings.write_string(b, `{"name":`)
 	write_json_string(b, ss.name)
-	fmt.sbprintf(
-		b,
-		`,"status":"{}","pid":{},"uptime":{},"memoryMB":{:.1f},"startedAt":{}}}`,
-		status.status_to_string(ss.status),
-		ss.pid,
-		ss.uptime,
-		ss.memory_mb,
-		ss.started_at,
-	)
+	// No pid means no age: send null instead of a stale or invented value. The
+	// dashboard renders that as a dash.
+	if ss.has_uptime {
+		fmt.sbprintf(
+			b,
+			`,"status":"{}","pid":{},"uptime":{},"memoryMB":{:.1f},"startedAt":{}}}`,
+			status.status_to_string(ss.status),
+			ss.pid,
+			ss.uptime,
+			ss.memory_mb,
+			ss.started_at,
+		)
+	} else {
+		fmt.sbprintf(
+			b,
+			`,"status":"{}","pid":{},"uptime":null,"memoryMB":{:.1f},"startedAt":0}}`,
+			status.status_to_string(ss.status),
+			ss.pid,
+			ss.memory_mb,
+		)
+	}
 }
 
 // service_status returns one service, falling back to a stopped entry for a

@@ -7,7 +7,7 @@ When `WEB_ENABLE = true`, visit `http://<WEB_ADDR>` to use the web interface.
 ### Dashboard
 - Real-time service status with SSE (Server-Sent Events) updates
 - Start / stop / restart controls
-- View PID, uptime, and memory usage per service
+- View PID, uptime, and memory usage per service (uptime shows a dash when no pid is known)
 
 ### Logs
 - View stdout and stderr logs with tab switching

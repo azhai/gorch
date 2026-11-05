@@ -19,15 +19,16 @@ TOML 格式。未指定 `-c` 时按以下顺序查找配置文件：
 | `PID_FILE` | `/tmp/gorch/gorch.pid` | 兼容字段 — 会解析并原样保存，但不会写 PID 文件 |
 | `SERVICES_LOCK` | `/tmp/gorch/gorch-services.lock` | 兼容字段 — 会解析并原样保存，但不会写锁文件 |
 
-### 兼容字段（当前不生效）
+### 全局兼容字段（不生效）
 
-Odin 版保留这些键，是为了让已有的 `gorch.toml` 和 Web 配置编辑器能正常加载、回写，但目前没有任何运行时代码使用它们：
+Odin 版保留这些**全局**键，是为了让已有的 `gorch.toml` 和 Web 配置编辑器能正常加载、回写，但目前没有运行时代码使用它们：
 
 | 字段 | Go 版的作用 | Odin 版现状 |
 |------|------------|-------------|
 | `PID_FILE`（全局） | supervisor 的 PID 文件 | 不写文件 |
 | `SERVICES_LOCK` | 记录服务 PID，重启后接管进程 | 不写文件；状态实际存在 oboe cache 快照 `gorch.state` 里 |
-| `PID_FILE`（服务级） | 守护进程 PID 文件，用于定位真正的 master | 启动进程时不读取 |
+
+**服务级** `PID_FILE` 不同：它会被读取，用于定位 daemon 化后的 master——见[守护进程 master PID](#守护进程-master-pid)。
 
 `CHECK_PORT`、`ENV_VARS`、`DEPENDS_ON` 已完整实现，分别见
 [依赖顺序](#依赖顺序depends_on)、[端口预检](#端口预检check_port)、
@@ -70,7 +71,7 @@ gorch 负责，当 gorch 没运行时产生的日志会在下次启动时按其�
 | `BACK_OFF` | 否 | `0`（回退到 `5`） | 重启前等待秒数 |
 | `PRE_ACTION` | 否 | — | 启动前通过 `/bin/sh -c` 执行的命令；15 秒超时，失败仅告警 |
 | `CHECK_PORT` | 否 | `0`（关闭） | 每次启动前清理占用该 TCP 端口的外部监听者 —— 见「端口预检」 |
-| `PID_FILE` | 否 | — | 兼容字段，不生效 |
+| `PID_FILE` | 否 | — | 守护进程 master 的 PID 文件（如 `/var/run/nginx.pid`）；启动后最多读 5 秒 —— 见「守护进程 master PID」 |
 | `STDOUT` | 否 | `LOG_DIR/<名称>.out.log` | 标准输出日志文件路径 |
 | `STDERR` | 否 | `LOG_DIR/<名称>.err.log` | 标准错误日志文件路径 |
 | `DEPENDS_ON` | 否 | `[]` | 必须先启动的服务；决定启动与停止顺序 —— 见「依赖顺序」 |
@@ -86,8 +87,18 @@ gorch 负责，当 gorch 没运行时产生的日志会在下次启动时按其�
 2. **CHECK_PORT** — 若已设置且端口被占用，先清理外部监听者。
 3. **日志文件** — 以追加模式打开 `STDOUT` / `STDERR`，把文件描述符直接交给子进程。
 4. **EXEC_CMD** — 通过 `/bin/sh -c` 启动并带上 `ENV_VARS`。不含 shell 元字符的普通命令会加 `exec` 前缀，让 gorch 跟踪到的 pid 就是服务本身；命令长度上限 1024 字节。
+5. **查找 master** — 若命令 daemon 化，最多 5 秒内通过 `PID_FILE` 或可执行名查找真正的 master（见下文）。
 
 `RESTART_CMD` 和 `CRON` 的一次性任务同样会带上 `ENV_VARS`；定时任务启动前也会做同样的 `CHECK_PORT` 预检。
+
+### 守护进程 master PID
+
+nginx、angie 会 daemon 化：gorch 启动的进程 fork 出 master 后自行退出，被启动的 pid 并不是真正对外服务的进程。启动后的 5 秒内，gorch 按以下顺序查找 master：
+
+1. **`PID_FILE`**（若已配置）。即使 daemon 保留了原来的父进程（angie 就是如此），也能通过轮询该文件找到 master。
+2. 否则用 **`pgrep -x`** 按 `EXEC_CMD` 里的可执行名查找。优先选择被 init 收养（PPID 1）的候选；只有一个候选时也接受。其它服务已跟踪的 pid、以及 gorch 自身的 pid，绝不会被接管。
+
+接管后跟踪的 pid 切换到 master，原来的子进程照常回收；`started_at` 保持不变，因此 uptime 从启动时刻算起。pid 未知的服务没有 uptime：API 返回 `"uptime": null`，仪表盘显示横线。
 
 ### 依赖顺序（DEPENDS_ON）
 

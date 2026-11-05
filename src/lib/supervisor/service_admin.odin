@@ -16,6 +16,7 @@ package supervisor
 
 import "base:runtime"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:sync"
 
@@ -151,6 +152,7 @@ add_service :: proc(sv: ^Supervisor, name: string, spec: config.ServiceConfig) -
 	s.spec = spec
 	s.status = .Stopped
 	s.exits = make([dynamic]i64)
+	s.orphans = make([dynamic]os.Process)
 	sv.services[s.name] = s
 	sv.cfg.services[s.name] = spec
 	rebuild_order(sv)
@@ -239,6 +241,7 @@ destroy_service_locked :: proc(sv: ^Supervisor, s: ^Service) {
 		}
 	}
 	delete(s.exits)
+	delete(s.orphans)
 	delete(name)
 	free(s)
 }

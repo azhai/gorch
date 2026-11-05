@@ -28,7 +28,8 @@ ServiceStatus :: struct {
 	status:     Status,
 	pid:        int,
 	started_at: i64, // unix seconds
-	uptime:     i64, // seconds
+	uptime:     i64, // seconds; meaningful only when has_uptime is set
+	has_uptime: bool, // false when there is no pid to measure uptime against
 	memory_mb:  f64,
 	exit_code:  ^int, // optional; nil when not exited
 }
@@ -42,13 +43,20 @@ cache_init :: proc(c: ^Cache) {
 	c.statuses = make(map[string]ServiceStatus)
 }
 
+// compute_uptime fills uptime only when there is a live pid and a start time.
+// A service can be marked running while its pid is unknown (a daemon that has
+// not been located yet, or one that exited and is between restarts); displaying
+// an age for it would be a lie, so has_uptime stays false and the API sends
+// null. The UI renders that as a dash.
 compute_uptime :: proc(ss: ^ServiceStatus) {
-	if ss.status == .Running && ss.started_at > 0 {
+	ss.has_uptime = false
+	if ss.status == .Running && ss.pid > 0 && ss.started_at > 0 {
 		now := time.to_unix_seconds(time.now())
 		ss.uptime = now - ss.started_at
 		if ss.uptime < 0 {
 			ss.uptime = 0
 		}
+		ss.has_uptime = true
 	} else {
 		ss.uptime = 0
 	}

@@ -48,6 +48,10 @@ POLL :: 500 * time.Millisecond
 SAVE_EVERY :: time.Second
 ROTATE_EVERY :: 60 // seconds; a daemon log only needs to roll over to the minute
 MEM_EVERY :: 5 // seconds between RSS samples; the reads are cheap but not free
+// How long a freshly started service may take to reveal its daemon master,
+// through PID_FILE or by reparenting itself to init. Matches the Go build's
+// readUserPidFile window, but probed from the loop instead of blocking it.
+DAEMON_PROBE :: 5
 
 // Service is the runtime half of a config.ServiceConfig.
 Service :: struct {
@@ -67,6 +71,10 @@ Service :: struct {
 	kill_at:      i64, // 0 = no pending SIGKILL deadline
 	want_running: bool, // false after `stop`, and after escalation
 	restarting:   bool, // an operator restart is pending on the current exit
+	// Daemonized services (nginx/angie) need a short window after spawn to
+	// publish their real master pid; see daemon.odin.
+	daemon_probe_until: i64,
+	daemon_probe_done:  bool,
 	saved:        state.Record, // last record written, to skip redundant flushes
 	has_saved:    bool,
 	// A scheduled (CRON) service has no resident pid; these describe the run
@@ -75,6 +83,9 @@ Service :: struct {
 	cron_started: i64,
 	// A service the operator deleted keeps a row until its child is reaped.
 	removing:     bool,
+	// When a PID_FILE points at a master while the process we spawned is still
+	// alive (angie), that child is reaped here instead of becoming a zombie.
+	orphans:      [dynamic]os.Process,
 }
 
 Supervisor :: struct {
@@ -134,6 +145,7 @@ init :: proc(sv: ^Supervisor, cfg: ^config.Config, state_path: string) -> string
 		s.spec = spec
 		s.status = .Stopped
 		s.exits = make([dynamic]i64)
+		s.orphans = make([dynamic]os.Process)
 		sv.services[s.name] = s
 		append(&sv.order, s.name)
 		register_cron(sv, s)
@@ -381,6 +393,12 @@ snapshot :: proc(sv: ^Supervisor) -> []status.ServiceStatus {
 		if s.pid > 0 || s.cron_pid > 0 {
 			ss.memory_mb = s.memory_mb
 		}
+		// Only a live process has an age. Without this, a stopped service kept
+		// displaying the uptime it had before it exited, because started_at is
+		// retained for state recovery.
+		if ss.pid <= 0 || (ss.status != .Running && ss.status != .Starting) {
+			ss.started_at = 0
+		}
 		if s.exit_code != 0 || s.status == .Crashed || s.status == .Failed {
 			code := s.exit_code
 			ss.exit_code = &code
@@ -452,20 +470,55 @@ tick :: proc(sv: ^Supervisor) -> bool {
 // the delete path in service_admin reaps a service being removed through it.
 poll_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> bool {
 	changed := false
+	// A PID_FILE master may be adopted while the process we spawned is still
+	// alive (angie); keep reaping that handle so it cannot become a zombie.
+	i := 0
+	for i < len(s.orphans) {
+		st, err := os.process_wait(s.orphans[i], 0)
+		if err != nil || st.exited {
+			ordered_remove(&s.orphans, i)
+		} else {
+			i += 1
+		}
+	}
 	if s.pid > 0 {
 		if s.owned {
 			st, err := os.process_wait(s.handle, 0)
 			if err == nil && st.exited {
-				on_exit_locked(sv, s, now, st.exit_code)
-				s.pid = 0
-				s.owned = false
+				// A daemon (nginx/angie) forks a master and lets the process we
+				// spawned exit. Adopt the master instead of treating this as a
+				// crash; otherwise the restart policy starts a second copy.
+				if master := find_master_locked(sv, s); master > 0 {
+					adopt_master_locked(sv, s, master)
+				} else {
+					on_exit_locked(sv, s, now, st.exit_code)
+					s.pid = 0
+					s.owned = false
+				}
 				changed = true
 			}
 		} else if !alive(s.pid) {
-			// Adopted process: no handle, so the exit code is unknown (-1).
-			on_exit_locked(sv, s, now, -1)
-			s.pid = 0
+			if master := find_master_locked(sv, s); master > 0 {
+				adopt_master_locked(sv, s, master)
+			} else {
+				// Adopted process: no handle, so the exit code is unknown (-1).
+				on_exit_locked(sv, s, now, -1)
+				s.pid = 0
+			}
 			changed = true
+		}
+
+		// angie may keep the started parent alive while the real master is
+		// already recorded in its PID_FILE, so look there during the probe
+		// window even before our own child exits.
+		if s.pid > 0 && !s.daemon_probe_done && s.spec.pid_file != "" {
+			if now >= s.daemon_probe_until {
+				s.daemon_probe_done = true
+			} else if pid := read_service_pid_file(s.spec); pid > 0 && pid != s.pid &&
+				pid != current_pid() && alive(pid) && !pid_tracked_elsewhere(sv, s, pid) {
+				adopt_master_locked(sv, s, pid)
+				changed = true
+			}
 		}
 
 		if s.pid > 0 && s.kill_at > 0 && now >= s.kill_at {
@@ -482,6 +535,94 @@ poll_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> bool {
 		persist_locked(sv, s)
 	}
 	return changed
+}
+
+// pid_tracked_elsewhere keeps a shared executable from being adopted twice:
+// two services can run the same binary (a daemon and a cron job), and only the
+// one whose child we just lost may claim a new pid.
+@(private = "file")
+pid_tracked_elsewhere :: proc(sv: ^Supervisor, self: ^Service, pid: int) -> bool {
+	for name in sv.order {
+		other := sv.services[name]
+		if other == self {
+			continue
+		}
+		if other.pid == pid || other.cron_pid == pid {
+			return true
+		}
+	}
+	return false
+}
+
+// read_service_pid_file resolves a relative PID_FILE against WORK_DIR, which is
+// the directory the service itself runs in.
+@(private = "file")
+read_service_pid_file :: proc(spec: config.ServiceConfig) -> int {
+	path := spec.pid_file
+	if len(path) == 0 {
+		return 0
+	}
+	if path[0] != '/' && len(spec.work_dir) > 0 {
+		joined := fmt.aprintf("{}/{}", spec.work_dir, path)
+		defer delete(joined)
+		return read_pid_file(joined)
+	}
+	return read_pid_file(path)
+}
+
+// find_master_locked returns the pid a daemonized service should be tracked by:
+// the PID_FILE value when the operator configured one, otherwise a process with
+// the same executable name that was reparented to init. It is called only while
+// the service is supposed to be running, so a manual stop or restart never
+// adopts the process it is about to kill.
+@(private = "file")
+find_master_locked :: proc(sv: ^Supervisor, s: ^Service) -> int {
+	if !s.want_running || s.restarting || s.removing || s.status == .Failed {
+		return 0
+	}
+	self := current_pid()
+	if pid := read_service_pid_file(s.spec); pid > 0 && pid != s.pid && pid != self &&
+		alive(pid) && !pid_tracked_elsewhere(sv, s, pid) {
+		return pid
+	}
+	exclude := make([dynamic]int, 0, len(sv.order))
+	defer delete(exclude)
+	for name in sv.order {
+		other := sv.services[name]
+		if other == s {
+			continue
+		}
+		if other.pid > 0 {
+			append(&exclude, other.pid)
+		}
+		if other.cron_pid > 0 {
+			append(&exclude, other.cron_pid)
+		}
+	}
+	pid := find_main_process(s.spec.exec_cmd, exclude[:])
+	if pid > 0 && pid != s.pid && pid != self && alive(pid) &&
+		!pid_tracked_elsewhere(sv, s, pid) && master_started_near(pid, s.started_at) {
+		return pid
+	}
+	return 0
+}
+
+// adopt_master_locked switches tracking to the daemon master. started_at is
+// kept: it is when the service was launched, which is what uptime should show.
+@(private = "file")
+adopt_master_locked :: proc(sv: ^Supervisor, s: ^Service, pid: int) {
+	old := s.pid
+	if s.owned && alive(old) {
+		append(&s.orphans, s.handle)
+	}
+	s.pid = pid
+	s.owned = false
+	s.handle = {}
+	s.status = .Running
+	s.kill_at = 0
+	s.daemon_probe_done = true
+	glog.info("adopted daemon master", "service", s.name, "old_pid", old, "pid", pid)
+	persist_locked(sv, s)
 }
 
 @(private = "file")
@@ -649,6 +790,8 @@ spawn_locked :: proc(sv: ^Supervisor, s: ^Service, now: i64) -> bool {
 	s.status = .Starting
 	s.kill_at = 0
 	s.next_at = 0
+	s.daemon_probe_until = now + DAEMON_PROBE
+	s.daemon_probe_done = false
 	glog.info("service started", "service", s.name, "pid", s.pid, "cmd", s.spec.exec_cmd)
 	persist_locked(sv, s)
 	return true
@@ -717,6 +860,7 @@ destroy :: proc(sv: ^Supervisor) {
 	}
 	for _, s in sv.services {
 		delete(s.exits)
+		delete(s.orphans)
 		delete(s.name)
 		free(s)
 	}

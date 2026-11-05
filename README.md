@@ -256,6 +256,10 @@ writes lives there unless you point `LOG_DIR` elsewhere:
 The Odin build has no Unix socket, supervisor PID file or CLI ↔ supervisor IPC —
 service control goes through the Web UI and REST API. The global `PID_FILE` and
 `SERVICES_LOCK` keys are still accepted for config compatibility but are unused.
+A **service-level** `PID_FILE` *is* used: when a command daemonizes (nginx/angie),
+gorch reads it to find the real master; without one, a same-named process
+reparented to init is adopted. A service with no known pid reports
+`"uptime": null` and the dashboard shows a dash.
 
 > **Note:** `/tmp` is cleared on reboot (and periodically on macOS), so logs do not survive a restart. Point `LOG_DIR` at a persistent directory if you need to keep them.
 
