@@ -179,9 +179,11 @@ build: odin-version check-deps assets
 # replacement for the plain one - just smaller. The original is kept too.
 upx-linux:
 	@for f in $(BIN)/$(APP)-$(VERSION)-linux-*; do \
+		case "$$f" in *.upx) continue;; esac; \
 		[ -f "$$f" ] || continue; \
 		if command -v upx >/dev/null 2>&1; then \
 			echo "UPX $$f ..."; \
+			rm -f "$$f.upx"; \
 			upx --brute -o "$$f.upx" "$$f" || { echo "  upx failed on $$f, skipped" >&2; continue; }; \
 			printf "  %-46s %8s bytes\n" "$$f.upx" "$$(wc -c < $$f.upx | tr -d ' ')"; \
 		else \
