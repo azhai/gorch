@@ -319,6 +319,8 @@ STDERR = '/tmp/gorch/logs/backup.err.log'
 如果即使设置了 `RESTART_CMD` 也想强制完全 stop+start，先停止再启动：
 
 ```sh
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/stop
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/start
+# WEB_AUTH = true 时带上 POST /api/auth/login 获取的 Bearer JWT
+# （curl -u 是 HTTP Basic，会返回 401）；未开启鉴权时去掉 -H 即可
+curl -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:8080/api/services/nginx/stop
+curl -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:8080/api/services/nginx/start
 ```

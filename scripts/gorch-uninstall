@@ -4,24 +4,30 @@
 # Stops and disables the service, then deletes only the service file. The
 # binary, gorch.toml, logs and persisted state are left alone on purpose.
 #
-# Keep SERVICE_NAME / LAUNCHD_LABEL and the service paths in sync with
-# scripts/gorch-install.
+# Keep SERVICE_NAME / LAUNCHD_LABEL / INITD_PATH and the service paths in sync
+# with scripts/gorch-install.
 
 set -eu
 
 SERVICE_NAME=gorch.service
 LAUNCHD_LABEL=com.github.azhai.gorch
+INITD_PATH=/etc/init.d/gorch
 
 usage() {
 	cat <<'EOF'
 Usage: gorch-uninstall [options]
 
-Remove the gorch system service (systemd on Linux, launchd on macOS).
+Remove the gorch system service (procd on OpenWrt, systemd on other Linux,
+launchd on macOS).
 
 Options:
-  -u, --user     remove the user-level service instead of the system-wide one
-  -d, --dry-run  print the actions, change nothing
-  -h, --help     show this help
+  -i, --init SYSTEM   Linux init: auto (default), systemd or procd
+  -u, --user          remove the user-level service instead of the system-wide one
+  -d, --dry-run       print the actions, change nothing
+  -h, --help          show this help
+
+auto uses the same detection as gorch-install. Pass the same --init value you
+used at install time if the machine was moved between init systems.
 
 A system-wide install normally needs root:
   sudo ./scripts/gorch-uninstall
@@ -33,9 +39,11 @@ info() { printf 'gorch-uninstall: %s\n' "$*"; }
 
 USER_MODE=0
 DRY_RUN=0
+INIT_SYSTEM=auto
 
 while [ $# -gt 0 ]; do
 	case "$1" in
+	-i | --init) [ $# -ge 2 ] || die "$1 needs a value"; INIT_SYSTEM=$2; shift 2 ;;
 	-u | --user) USER_MODE=1; shift ;;
 	-d | --dry-run) DRY_RUN=1; shift ;;
 	-h | --help) usage; exit 0 ;;
@@ -45,10 +53,37 @@ done
 
 OS=$(uname -s)
 case "$OS" in
-Linux) PLATFORM=systemd ;;
-Darwin) PLATFORM=launchd ;;
+Linux)
+	case "$INIT_SYSTEM" in
+	auto)
+		if [ -f /etc/openwrt_release ] || { [ -f /etc/rc.common ] && [ -x /sbin/procd ]; }; then
+			PLATFORM=procd
+		else
+			PLATFORM=systemd
+		fi
+		;;
+	systemd | procd) PLATFORM=$INIT_SYSTEM ;;
+	*) die "invalid --init value: $INIT_SYSTEM (use auto, systemd or procd)" ;;
+	esac
+	;;
+Darwin)
+	if [ "$INIT_SYSTEM" = auto ]; then
+		PLATFORM=launchd
+	elif [ "$DRY_RUN" -eq 1 ]; then
+		case "$INIT_SYSTEM" in
+		systemd | procd) PLATFORM=$INIT_SYSTEM ;;
+		*) die "invalid --init value: $INIT_SYSTEM (use auto, systemd or procd)" ;;
+		esac
+	else
+		die "--init only applies to Linux (add --dry-run to preview)"
+	fi
+	;;
 *) die "unsupported OS: $OS (only Linux and macOS are supported)" ;;
 esac
+
+if [ "$PLATFORM" = procd ] && [ "$USER_MODE" -eq 1 ]; then
+	die "--user is not supported on OpenWrt/procd; remove the system-wide service instead"
+fi
 
 HOME_DIR=${HOME:-$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}
 [ -n "$HOME_DIR" ] || die "cannot determine home directory"
@@ -61,6 +96,9 @@ if [ "$PLATFORM" = systemd ]; then
 		UNIT_PATH="/etc/systemd/system/$SERVICE_NAME"
 		SCOPE=system
 	fi
+elif [ "$PLATFORM" = procd ]; then
+	UNIT_PATH=$INITD_PATH
+	SCOPE=system
 else
 	if [ "$USER_MODE" -eq 1 ]; then
 		UNIT_PATH="$HOME_DIR/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
@@ -79,6 +117,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
 		else
 			printf '# would run: systemctl stop %s; systemctl disable %s; systemctl daemon-reload\n' "$SERVICE_NAME" "$SERVICE_NAME"
 		fi
+	elif [ "$PLATFORM" = procd ]; then
+		printf '# would run: %s stop; %s disable; rm -f %s\n' "$UNIT_PATH" "$UNIT_PATH" "$UNIT_PATH"
 	else
 		printf '# would run: launchctl unload -w %s\n' "$UNIT_PATH"
 	fi
@@ -103,6 +143,9 @@ if [ "$PLATFORM" = systemd ]; then
 		systemctl disable "$SERVICE_NAME" 2>/dev/null || true
 		systemctl daemon-reload || die "systemctl daemon-reload failed"
 	fi
+elif [ "$PLATFORM" = procd ]; then
+	"$UNIT_PATH" stop 2>/dev/null || true
+	"$UNIT_PATH" disable 2>/dev/null || true
 else
 	launchctl unload -w "$UNIT_PATH" 2>/dev/null || true
 fi

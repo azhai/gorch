@@ -43,23 +43,28 @@ gorch --help
 ## 安装为系统服务
 
 两个独立的 POSIX `sh` 脚本替代了 Go 版的 `install` / `uninstall` 命令。它们生成
-的服务定义让 gorch 前台运行，由 systemd/launchd 负责守护。
+的服务定义让 gorch 前台运行，由 procd（OpenWrt）、systemd（其它 Linux）或 launchd
+负责守护。
 
 ```sh
-sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml   # Linux/systemd 或 macOS/launchd
+sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml   # Linux 自动识别 / macOS 用 launchd
+sudo ./scripts/gorch-install --init procd --config /etc/gorch/gorch.toml  # 强制 /etc/init.d/gorch
 ./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml
 sudo ./scripts/gorch-uninstall                                # 卸载服务
 ./scripts/gorch-uninstall --user
 ```
 
-系统级安装需要 root（unit/plist 写在系统目录），`--user` 不需要。
+Linux 默认 `auto`：检测到 `/etc/openwrt_release`，或 `/etc/rc.common` + `/sbin/procd`
+同时存在（arm64 路由器常见）时生成 `/etc/init.d/gorch`，否则生成 systemd unit。
+`--init systemd|procd` 可强制指定；macOS 上配合 `--dry-run` 可预览 Linux 服务文件。
+系统级安装需要 root，`--user` 不需要（procd 没有用户级服务，会拒绝该参数）。
 `gorch-uninstall` **只删除服务文件**——二进制、配置、日志和状态文件都会保留。
 
 发布产物名为 `gorch-<版本>-<系统>-<架构>`，请先安装成 `gorch` 这个普通名字，
 或用 `--bin` 直接指定：
 
 ```sh
-sudo install -m 755 gorch-v0.4.3-linux-amd64 /usr/local/bin/gorch
+sudo install -m 755 gorch-v0.4.5-linux-amd64 /usr/local/bin/gorch
 ```
 
 ### 脚本参数
@@ -68,6 +73,7 @@ sudo install -m 755 gorch-v0.4.3-linux-amd64 /usr/local/bin/gorch
 |-----------------|------|
 | `-c, --config PATH` | 使用的 gorch.toml（省略则自动查找） |
 | `-b, --bin PATH` | 使用的 gorch 二进制（依次查找 `$GORCH_BIN`、`./bin/gorch`、`./gorch`、`$PATH`） |
+| `-i, --init SYSTEM` | Linux init：`auto` / `systemd` / `procd` |
 | `-u, --user` | 安装为用户级服务，而非系统级 |
 | `-n, --no-start` | 只写服务文件，不启用/启动 |
 | `-d, --dry-run` | 只打印服务文件和将执行的动作，不做任何修改 |
@@ -75,6 +81,7 @@ sudo install -m 755 gorch-v0.4.3-linux-amd64 /usr/local/bin/gorch
 
 | `gorch-uninstall` | 说明 |
 |-------------------|------|
+| `-i, --init SYSTEM` | 与安装时保持一致；自动识别不一致时手动指定 |
 | `-u, --user` | 卸载用户级服务 |
 | `-d, --dry-run` | 只打印将执行的动作，不做任何修改 |
 | `-h, --help` | 显示帮助 |
@@ -90,25 +97,32 @@ sudo install -m 755 gorch-v0.4.3-linux-amd64 /usr/local/bin/gorch
 | 系统 | 范围 | 服务文件 |
 |------|------|----------|
 | Linux | 系统级 | `/etc/systemd/system/gorch.service` |
+| Linux（OpenWrt） | 系统级 | `/etc/init.d/gorch`（及 `/etc/rc.d/` 软链） |
 | Linux | `--user` | `~/.config/systemd/user/gorch.service` |
 | macOS | 系统级 | `/Library/LaunchDaemons/com.github.azhai.gorch.plist` |
 | macOS | `--user` | `~/Library/LaunchAgents/com.github.azhai.gorch.plist` |
 
 生成的服务执行的是 `gorch -c <配置>`：systemd 下为 `Type=simple` +
-`Restart=on-failure`，launchd 下为 `KeepAlive` + `RunAtLoad`。**没有 `start`
-子命令，也没有 `PIDFile`**——Odin 二进制既不 fork，也不提供 CLI。systemd 的输出
-进 journal；launchd 的输出写到 `/tmp/gorch/logs/gorch.{out,err}.log`。
+`Restart=on-failure`，launchd 下为 `KeepAlive` + `RunAtLoad`，procd 下为
+`USE_PROCD=1` + `START=95` + `respawn 3600 5 0`。**没有 `start` 子命令，也没有
+`PIDFile`**——Odin 二进制既不 fork，也不提供 CLI。systemd 的输出进 journal，
+procd 用 `logread -e gorch`，launchd 写到 `/tmp/gorch/logs/gorch.{out,err}.log`。
 
 `gorch-install` 会执行 `systemctl daemon-reload && systemctl enable --now
-gorch.service`（macOS 为 `launchctl load -w <plist>`）。若自动启动失败，可手动加载：
+gorch.service`、`/etc/init.d/gorch enable && /etc/init.d/gorch restart`，或
+`launchctl load -w <plist>`。若自动启动失败，可手动加载：
 
 ```sh
-# Linux
+# Linux / systemd
 sudo systemctl daemon-reload
 sudo systemctl enable --now gorch.service
 # Linux 用户级
 systemctl --user daemon-reload
 systemctl --user enable --now gorch.service
+# OpenWrt / procd
+/etc/init.d/gorch enable
+/etc/init.d/gorch restart
+/etc/init.d/gorch status
 # macOS
 sudo launchctl load -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
 ```
@@ -120,7 +134,7 @@ systemd 用户级服务在注销后会停止，如需常驻请再执行
 
 没有 `status`、`stop`、`restart`、`logs` 命令。请用 Web 界面（见
 [Web 界面](./web-ui-ZH.md)）或 REST API。配置了 `URL_PREFIX` 时路径需要带前缀，
-开启 `WEB_AUTH` 时需要带上账号密码：
+开启 `WEB_AUTH` 时需要带 Bearer JWT（**不是 HTTP Basic，`curl -u` 会返回 401**）：
 
 | 操作 | 请求 |
 |------|------|
@@ -131,9 +145,13 @@ systemd 用户级服务在注销后会停止，如需常驻请再执行
 | 清空日志 | `POST /api/services/<名称>/logs/clear?type=stdout` |
 
 ```sh
-curl -u admin:secret http://127.0.0.1:8080/api/services
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
-curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
+BASE=http://127.0.0.1:8080
+# WEB_AUTH = true 时先登录拿 token（24 小时有效）；WEB_AUTH = false 时去掉 -H 即可
+TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"secret"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
+curl -H "Authorization: Bearer $TOKEN" "$BASE/api/services"
+curl -H "Authorization: Bearer $TOKEN" -X POST "$BASE/api/services/api/restart"
+curl -H "Authorization: Bearer $TOKEN" "$BASE/api/services/api/logs?type=stderr&lines=100"
 ```
 
 pid 未知的服务没有运行时长：`uptime` 为 `null`、`startedAt` 为 `0`，仪表盘会显示横线。

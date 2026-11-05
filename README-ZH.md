@@ -40,7 +40,7 @@ gorch 非常适合 Web 应用、API 服务、定时任务、无状态守护进�
 ```sh
 git clone https://github.com/azhai/gorch.git
 cd gorch
-git checkout v0.4.4      # 换成你要部署的 tag
+git checkout v0.4.5      # 换成你要部署的 tag
 make deps                # 拉取唯一子模块 vendor/oboe
 make one                 # 构建本机版本 ./bin/gorch
 ```
@@ -61,28 +61,32 @@ make release                                 # build + 用 upx --brute 压缩 Li
 目标机上只需要这一个文件：无运行时、无动态库、也不需要 `web/` 目录。先校验校验和（在 `bin/` 下执行，或把 `SHA256SUMS` 与产物放在一起），再以 `gorch` 这个普通名字安装，方便服务脚本自动查找：
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing   # Linux；macOS 用：shasum -a 256 gorch-v0.4.4-darwin-arm64
-chmod +x gorch-v0.4.4-linux-amd64
-sudo install -m 755 gorch-v0.4.4-linux-amd64 /usr/local/bin/gorch
+sha256sum -c SHA256SUMS --ignore-missing   # Linux；macOS 用：shasum -a 256 gorch-v0.4.5-darwin-arm64
+chmod +x gorch-v0.4.5-linux-amd64
+sudo install -m 755 gorch-v0.4.5-linux-amd64 /usr/local/bin/gorch
 gorch --help
 ```
 
-想用更小的体积，把文件名换成 `gorch-v0.4.4-linux-amd64.upx` 即可。二进制放在别处时，用 `gorch-install --bin PATH` 或环境变量 `GORCH_BIN` 指定。
+想用更小的体积，把文件名换成 `gorch-v0.4.5-linux-amd64.upx` 即可。二进制放在别处时，用 `gorch-install --bin PATH` 或环境变量 `GORCH_BIN` 指定。
 
 ### 3. 安装为系统服务
 
-二进制本身是前台运行的，长驻和崩溃拉起交给服务管理器。两个独立的 POSIX `sh` 脚本负责生成 systemd unit（Linux）或 launchd plist（macOS）：
+二进制本身是前台运行的，长驻和崩溃拉起交给服务管理器。两个独立的 POSIX `sh` 脚本负责生成 systemd unit（Linux）、procd init 脚本（OpenWrt / ImmortalWrt，典型如 arm64 路由器）或 launchd plist（macOS）：
 
 ```sh
-sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml          # 系统级，需要 root
-./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml   # 用户级，无需 root
-./scripts/gorch-install --dry-run --config /etc/gorch/gorch.toml      # 只预览，不写任何文件
+sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml           # 系统级，需要 root
+./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml    # 用户级，无需 root
+sudo ./scripts/gorch-install --init procd --config /etc/gorch/gorch.toml  # 强制生成 /etc/init.d/gorch
+./scripts/gorch-install --dry-run --config /etc/gorch/gorch.toml       # 只预览，不写任何文件
 ```
+
+Linux 下默认 `auto`：存在 `/etc/openwrt_release`，或同时存在 `/etc/rc.common` 与 `/sbin/procd` 时选 procd，否则选 systemd；可用 `--init systemd|procd` 强制指定。在 macOS 上执行 `--dry-run --init procd` 也能预览 init 脚本，不会写盘。
 
 | 参数 | `gorch-install` | `gorch-uninstall` |
 |------|:---------------:|:----------------:|
 | `-c, --config PATH` | 指定配置文件 | — |
 | `-b, --bin PATH` | 指定二进制 | — |
+| `-i, --init SYSTEM` | Linux init：`auto` / `systemd` / `procd` | 与安装时保持一致 |
 | `-u, --user` | 用户级服务 | 用户级服务 |
 | `-n, --no-start` | 只写服务文件，不启用/启动 | — |
 | `-d, --dry-run` | 只预览，不做修改 | 只预览，不做修改 |
@@ -93,11 +97,29 @@ sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml          # 系统级
 | 系统 | 范围 | 服务文件 |
 |------|------|----------|
 | Linux | 系统级 | `/etc/systemd/system/gorch.service` |
+| Linux（OpenWrt） | 系统级 | `/etc/init.d/gorch`（及 `/etc/rc.d/` 软链） |
 | Linux | `--user` | `~/.config/systemd/user/gorch.service` |
 | macOS | 系统级 | `/Library/LaunchDaemons/com.github.azhai.gorch.plist` |
 | macOS | `--user` | `~/Library/LaunchAgents/com.github.azhai.gorch.plist` |
 
-生成的服务执行的是 `gorch -c <配置>`：systemd 下为 `Type=simple` + `Restart=on-failure`，launchd 下为 `KeepAlive` + `RunAtLoad`。**没有 `start` 子命令，也没有 `PIDFile`**——Odin 二进制不 fork。脚本随后执行 `systemctl daemon-reload && systemctl enable --now gorch.service`（macOS 为 `launchctl load -w <plist>`）；用了 `--no-start` 时可手工执行这些命令。systemd 用户级服务默认会在注销后停止，需要常驻请再执行 `loginctl enable-linger <用户名>`。全部参数与生成文件见[命令参考](./docs/cli-ZH.md)。macOS 下也可用 [launchd-ui](https://github.com/azu/launchd-ui) 管理生成的 agent。
+生成的服务执行的是 `gorch -c <配置>`：systemd 下为 `Type=simple` + `Restart=on-failure`，launchd 下为 `KeepAlive` + `RunAtLoad`，OpenWrt 下是一个极简的 `USE_PROCD=1` 脚本（`START=95` / `respawn 3600 5 0`）：
+
+```sh
+#!/bin/sh /etc/rc.common
+START=95
+STOP=10
+USE_PROCD=1
+start_service() {
+  procd_open_instance gorch
+  procd_set_param command "/usr/local/bin/gorch" -c "/etc/gorch/gorch.toml"
+  procd_set_param respawn 3600 5 0
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_close_instance
+}
+```
+
+**没有 `start` 子命令，也没有 `PIDFile`**——Odin 二进制不 fork。脚本随后执行 `systemctl daemon-reload && systemctl enable --now gorch.service`、`/etc/init.d/gorch enable && /etc/init.d/gorch restart` 或 `launchctl load -w <plist>`；用了 `--no-start` 时可手工执行这些命令。systemd 用户级服务默认会在注销后停止，需要常驻请再执行 `loginctl enable-linger <用户名>`。全部参数与生成文件见[命令参考](./docs/cli-ZH.md)。macOS 下也可用 [launchd-ui](https://github.com/azu/launchd-ui) 管理生成的 agent。
 
 ## 使用
 
@@ -176,32 +198,43 @@ sudo systemctl restart gorch.service
 sudo systemctl stop gorch.service        # 同时停掉所有被托管的服务
 sudo journalctl -u gorch.service -f
 
+# OpenWrt / procd
+/etc/init.d/gorch status
+/etc/init.d/gorch restart
+/etc/init.d/gorch stop             # 同时停掉所有被托管的服务
+logread -e gorch                   # stdout / stderr 进系统日志
+
 # macOS / launchd
 sudo launchctl list com.github.azhai.gorch
 sudo launchctl unload -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
 sudo launchctl load -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
 ```
 
-systemd 下 gorch 自身输出进 journal；launchd 下写到 `/tmp/gorch/logs/gorch.{out,err}.log`。
+systemd 下 gorch 自身输出进 journal；procd 下用 `logread` 查看；launchd 下写到 `/tmp/gorch/logs/gorch.{out,err}.log`。
 
 ### 4. 管理被托管的服务
 
 用仪表盘上的 启动 / 停止 / 重启 按钮，或调用同样的 REST API：
 
 ```sh
-curl -u admin:secret http://127.0.0.1:8080/api/services
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/stop
+BASE=http://127.0.0.1:8080
+# WEB_AUTH = true：先登录一次，之后所有请求复用这个 JWT（24 小时有效）
+TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"secret"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
+
+curl -H "Authorization: Bearer $TOKEN" "$BASE/api/services"
+curl -H "Authorization: Bearer $TOKEN" -X POST "$BASE/api/services/api/restart"
+curl -H "Authorization: Bearer $TOKEN" -X POST "$BASE/api/services/api/stop"
 ```
 
-只有 `WEB_AUTH = true` 时才需要 `-u` 账号密码。配置了 `URL_PREFIX = "/gorch"`（例如反代到 `https://host/gorch/`）时，所有 UI 与 API 路径都要加前缀：`/gorch/api/services`。
+`WEB_AUTH = false` 时去掉 `-H` 这一项即可。API 用的是 **Bearer JWT**，不是 HTTP Basic——`curl -u` 即使账号密码正确也会返回 401。`WEB_AUTH = true` 时 `/api/services` 必须带 token（前端页面加载时会故意发一次不带 token 的探测请求，同样返回 401），只有 `/api/auth/*` 是公开的。配置了 `URL_PREFIX = "/gorch"`（例如反代到 `https://host/gorch/`）时，所有 UI 与 API 路径都要加前缀：`/gorch/api/services`。
 
 ### 5. 查看日志
 
 Web 界面提供实时的 stdout / stderr 日志查看器；API 返回 JSON 格式的尾部内容：
 
 ```sh
-curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
+curl -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
 ```
 
 ### 6. Web 管理界面
@@ -216,12 +249,13 @@ curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&li
 
 ## 卸载
 
-卸载就是移除 systemd unit / launchd plist。脚本会先停止并禁用服务，**只删除服务文件**：
+卸载就是移除 systemd unit / procd init 脚本 / launchd plist。脚本会先停止并禁用服务（procd 下同时清掉 `/etc/rc.d/` 软链），**只删除服务文件**：
 
 ```sh
-sudo ./scripts/gorch-uninstall        # 系统级
-./scripts/gorch-uninstall --user     # 用户级
-./scripts/gorch-uninstall --dry-run  # 只预览将执行的动作
+sudo ./scripts/gorch-uninstall                 # 系统级
+./scripts/gorch-uninstall --user              # 用户级
+sudo ./scripts/gorch-uninstall --init procd   # OpenWrt，或自动识别不一致时
+./scripts/gorch-uninstall --dry-run           # 只预览将执行的动作
 ```
 
 二进制、配置、日志和状态文件都会有意保留，因此升级只需替换二进制再跑一次 `gorch-install`。如需彻底清理，请先停止服务，再自行删除以下文件：
@@ -234,7 +268,7 @@ sudo ./scripts/gorch-uninstall        # 系统级
 | `/tmp/gorch/gorch.state`、`<LOG_DIR>/gorch.state` | 服务状态快照 |
 | `TOTP_DB`，默认 `/var/lib/gorch/totp.db` | TOTP 绑定数据库 |
 
-若曾为 systemd 用户级服务开启 lingering，还需执行 `loginctl disable-linger <用户名>`。手工 `systemctl` / `launchctl` 命令见[命令参考](./docs/cli-ZH.md)。
+若曾为 systemd 用户级服务开启 lingering，还需执行 `loginctl disable-linger <用户名>`。手工 `systemctl` / `/etc/init.d/gorch` / `launchctl` 命令见[命令参考](./docs/cli-ZH.md)。
 
 ## 运行时文件
 

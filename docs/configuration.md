@@ -369,6 +369,8 @@ This is ideal for daemons like Nginx/Angie that support reload signals:
 If you want to force a full stop+start even when `RESTART_CMD` is set, stop the service first, then start it:
 
 ```sh
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/stop
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/nginx/start
+# When WEB_AUTH = true, pass the Bearer JWT from POST /api/auth/login
+# (curl -u is HTTP Basic and returns 401); omit the header when auth is off.
+curl -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:8080/api/services/nginx/stop
+curl -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:8080/api/services/nginx/start
 ```

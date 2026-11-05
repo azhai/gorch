@@ -42,7 +42,7 @@ Requires [Odin](https://odin-lang.org/) `dev-2026-10` or newer on the **build** 
 ```sh
 git clone https://github.com/azhai/gorch.git
 cd gorch
-git checkout v0.4.4      # or the tag you want to deploy
+git checkout v0.4.5      # or the tag you want to deploy
 make deps                # fetch vendor/oboe, the only submodule
 make one                 # build ./bin/gorch for this machine
 ```
@@ -63,28 +63,32 @@ The full matrix is meant to be built on macOS: darwin targets link natively, lin
 One file is enough — no runtime, no shared libraries, no `web/` directory. Verify the checksum (run it in `bin/`, or keep `SHA256SUMS` next to the artifact), then install it under the plain name `gorch` so the service scripts can find it:
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing     # Linux; on macOS: shasum -a 256 gorch-v0.4.4-darwin-arm64
-chmod +x gorch-v0.4.4-linux-amd64
-sudo install -m 755 gorch-v0.4.4-linux-amd64 /usr/local/bin/gorch
+sha256sum -c SHA256SUMS --ignore-missing     # Linux; on macOS: shasum -a 256 gorch-v0.4.5-darwin-arm64
+chmod +x gorch-v0.4.5-linux-amd64
+sudo install -m 755 gorch-v0.4.5-linux-amd64 /usr/local/bin/gorch
 gorch --help
 ```
 
-Use `gorch-v0.4.4-linux-amd64.upx` instead if you want the smaller UPX-packed build. If the binary lives somewhere else, pass `--bin PATH` to `gorch-install` or set `GORCH_BIN`.
+Use `gorch-v0.4.5-linux-amd64.upx` instead if you want the smaller UPX-packed build. If the binary lives somewhere else, pass `--bin PATH` to `gorch-install` or set `GORCH_BIN`.
 
 ### 3. Install as a system service
 
-The binary runs in the foreground, so a service manager is what keeps it alive. Two standalone POSIX `sh` scripts generate the systemd unit (Linux) or launchd plist (macOS):
+The binary runs in the foreground, so a service manager is what keeps it alive. Two standalone POSIX `sh` scripts generate a systemd unit (Linux), a procd init script (OpenWrt / ImmortalWrt, e.g. arm64 routers) or a launchd plist (macOS):
 
 ```sh
 sudo ./scripts/gorch-install --config /etc/gorch/gorch.toml    # system-wide (root required)
 ./scripts/gorch-install --user --config ~/.config/gorch/gorch.toml  # user-level, no root
+sudo ./scripts/gorch-install --init procd --config /etc/gorch/gorch.toml  # force /etc/init.d/gorch
 ./scripts/gorch-install --dry-run --config /etc/gorch/gorch.toml   # preview only, writes nothing
 ```
+
+On Linux `auto` (the default) picks procd when `/etc/openwrt_release` exists, or when both `/etc/rc.common` and `/sbin/procd` are present; otherwise it uses systemd. Pass `--init systemd|procd` to override. `--dry-run --init procd` also works on macOS to preview the init script before deploying.
 
 | Option | `gorch-install` | `gorch-uninstall` |
 |--------|:---------------:|:----------------:|
 | `-c, --config PATH` | config file to use | — |
 | `-b, --bin PATH` | binary to run | — |
+| `-i, --init SYSTEM` | Linux init: `auto` / `systemd` / `procd` | same value as at install time |
 | `-u, --user` | user-level service | user-level service |
 | `-n, --no-start` | write the unit but do not enable/start | — |
 | `-d, --dry-run` | preview, change nothing | preview, change nothing |
@@ -95,11 +99,29 @@ Config search order: `--config`, `$GORCH_CONFIG`, `/etc/gorch/gorch.toml`, `~/.c
 | OS | Scope | Service file |
 |----|-------|-------------|
 | Linux | system | `/etc/systemd/system/gorch.service` |
+| Linux (OpenWrt) | system | `/etc/init.d/gorch` (+ `/etc/rc.d/` links) |
 | Linux | `--user` | `~/.config/systemd/user/gorch.service` |
 | macOS | system | `/Library/LaunchDaemons/com.github.azhai.gorch.plist` |
 | macOS | `--user` | `~/Library/LaunchAgents/com.github.azhai.gorch.plist` |
 
-The generated definition is `gorch -c <config>` — `Type=simple` + `Restart=on-failure` on systemd, `KeepAlive` + `RunAtLoad` on launchd. There is no `start` verb and no `PIDFile`: the Odin binary does not fork. The script then runs `systemctl daemon-reload && systemctl enable --now gorch.service` (or `launchctl load -w <plist>`), which you can also do by hand when `--no-start` was used. On a systemd user service, run `loginctl enable-linger <user>` if it must survive logout. See the [CLI Reference](./docs/cli.md) for every option and generated file. On macOS, [launchd-ui](https://github.com/azu/launchd-ui) is also handy for managing the resulting agent.
+The generated definition is `gorch -c <config>` — `Type=simple` + `Restart=on-failure` on systemd, `KeepAlive` + `RunAtLoad` on launchd, and a minimal `USE_PROCD=1` script with `START=95` / `respawn 3600 5 0` on OpenWrt:
+
+```sh
+#!/bin/sh /etc/rc.common
+START=95
+STOP=10
+USE_PROCD=1
+start_service() {
+  procd_open_instance gorch
+  procd_set_param command "/usr/local/bin/gorch" -c "/etc/gorch/gorch.toml"
+  procd_set_param respawn 3600 5 0
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_close_instance
+}
+```
+
+There is no `start` verb and no `PIDFile`: the Odin binary does not fork. The script then runs `systemctl daemon-reload && systemctl enable --now gorch.service`, `/etc/init.d/gorch enable && /etc/init.d/gorch restart`, or `launchctl load -w <plist>` — all of which you can do by hand when `--no-start` was used. On a systemd user service, run `loginctl enable-linger <user>` if it must survive logout. See the [CLI Reference](./docs/cli.md) for every option and generated file. On macOS, [launchd-ui](https://github.com/azu/launchd-ui) is also handy for managing the resulting agent.
 
 ## Usage
 
@@ -178,32 +200,45 @@ sudo systemctl restart gorch.service
 sudo systemctl stop gorch.service        # also stops all managed children
 sudo journalctl -u gorch.service -f
 
+# OpenWrt / procd
+/etc/init.d/gorch status
+/etc/init.d/gorch restart
+/etc/init.d/gorch stop             # also stops all managed children
+logread -e gorch                   # stdout / stderr go to the system log
+
 # macOS / launchd
 sudo launchctl list com.github.azhai.gorch
 sudo launchctl unload -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
 sudo launchctl load -w /Library/LaunchDaemons/com.github.azhai.gorch.plist
 ```
 
-On systemd, gorch's own output goes to the journal; on launchd, to `/tmp/gorch/logs/gorch.{out,err}.log`.
+On systemd, gorch's own output goes to the journal; on procd, to `logread`; on launchd, to `/tmp/gorch/logs/gorch.{out,err}.log`.
 
 ### 4. Control the managed services
 
 Use the dashboard's Start / Stop / Restart buttons, or the same REST API:
 
 ```sh
-curl -u admin:secret http://127.0.0.1:8080/api/services
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/restart
-curl -u admin:secret -X POST http://127.0.0.1:8080/api/services/api/stop
+BASE=http://127.0.0.1:8080
+# WEB_AUTH = true: log in once, then reuse the JWT (valid 24h) for every call
+TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"secret"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
+
+curl -H "Authorization: Bearer $TOKEN" "$BASE/api/services"
+curl -H "Authorization: Bearer $TOKEN" -X POST "$BASE/api/services/api/restart"
+curl -H "Authorization: Bearer $TOKEN" -X POST "$BASE/api/services/api/stop"
 ```
 
-The `-u` credentials are only needed when `WEB_AUTH = true`. With `URL_PREFIX = "/gorch"` (e.g. behind a reverse proxy at `https://host/gorch/`), prepend the prefix to every UI and API path: `/gorch/api/services`.
+With `WEB_AUTH = false`, drop the `-H` line entirely.
+
+The API uses **Bearer JWT**, not HTTP Basic — `curl -u` returns 401 even with the right credentials. `/api/services` needs a token whenever `WEB_AUTH = true` (the unauthenticated request the UI makes on load to detect auth mode also gets 401 by design); only `/api/auth/*` is public. With `URL_PREFIX = "/gorch"` (e.g. behind a reverse proxy at `https://host/gorch/`), prepend the prefix to every UI and API path: `/gorch/api/services`.
 
 ### 5. View logs
 
 The Web UI has a live log viewer (stdout / stderr); the API returns a JSON tail:
 
 ```sh
-curl -u admin:secret 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
+curl -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/services/api/logs?type=stderr&lines=100'
 ```
 
 ### 6. Web UI
@@ -218,12 +253,13 @@ Features:
 
 ## Uninstall
 
-Uninstalling means removing the systemd unit / launchd plist. The script stops and disables the service first, then deletes **only the service file**:
+Uninstalling means removing the systemd unit / procd init script / launchd plist. The script stops and disables the service first (on procd it also drops the `/etc/rc.d/` symlinks), then deletes **only the service file**:
 
 ```sh
-sudo ./scripts/gorch-uninstall       # system-wide
-./scripts/gorch-uninstall --user    # user-level
-./scripts/gorch-uninstall --dry-run # preview the actions, change nothing
+sudo ./scripts/gorch-uninstall                  # system-wide
+./scripts/gorch-uninstall --user               # user-level
+sudo ./scripts/gorch-uninstall --init procd    # OpenWrt, or when auto-detection differs
+./scripts/gorch-uninstall --dry-run            # preview the actions, change nothing
 ```
 
 The binary, config, logs and persisted state are intentionally kept, so reinstalling or upgrading is just replacing the binary and running `gorch-install` again. If you want a complete cleanup, stop the service first and remove these files yourself:
@@ -236,7 +272,7 @@ The binary, config, logs and persisted state are intentionally kept, so reinstal
 | `/tmp/gorch/gorch.state`, `<LOG_DIR>/gorch.state` | Persisted service state |
 | `TOTP_DB`, default `/var/lib/gorch/totp.db` | TOTP binding database |
 
-Also run `loginctl disable-linger <user>` if you enabled lingering for a systemd user service. See the [CLI Reference](./docs/cli.md) for manual `systemctl` / `launchctl` equivalents.
+Also run `loginctl disable-linger <user>` if you enabled lingering for a systemd user service. See the [CLI Reference](./docs/cli.md) for manual `systemctl` / `/etc/init.d/gorch` / `launchctl` equivalents.
 
 ## Runtime Files
 
